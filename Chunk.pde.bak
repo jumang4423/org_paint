@@ -1,0 +1,89 @@
+// Canvas chunk for infinite scrolling
+class Chunk {
+  PGraphics canvas;
+  PGraphics canvasBuffer;
+  int yPosition; // Global Y position of this chunk
+  int chunkHeight;
+  boolean isDirty = false;
+  
+  Chunk(int yPos, int height) {
+    this.yPosition = yPos;
+    this.chunkHeight = height;
+    
+    // Create double buffer for this chunk
+    canvas = createGraphics(CANVAS_WIDTH, chunkHeight, P2D);
+    canvasBuffer = createGraphics(CANVAS_WIDTH, chunkHeight, P2D);
+    
+    // Initialize to white
+    clear();
+  }
+  
+  void clear() {
+    canvas.beginDraw();
+    canvas.background(255);
+    canvas.endDraw();
+    
+    canvasBuffer.beginDraw();
+    canvasBuffer.background(255);
+    canvasBuffer.endDraw();
+    
+    isDirty = false;
+  }
+  
+  boolean isVisible(float scrollY, int screenHeight) {
+    return !(yPosition + chunkHeight < scrollY || yPosition > scrollY + screenHeight);
+  }
+  
+  boolean containsPoint(float globalY) {
+    return globalY >= yPosition && globalY < yPosition + chunkHeight;
+  }
+  
+  void applyPaint(float globalMouseX, float globalMouseY, 
+                  float globalPrevX, float globalPrevY, 
+                  float brushSize, boolean isErasing, PShader paintShader) {
+    // Convert global coordinates to local chunk coordinates
+    float localMouseY = globalMouseY - yPosition;
+    float localPrevY = globalPrevY - yPosition;
+    
+    // Check if brush affects this chunk
+    float brushRadius = brushSize * 0.5;
+    boolean currentInChunk = localMouseY >= -brushRadius && localMouseY < chunkHeight + brushRadius;
+    boolean prevInChunk = localPrevY >= -brushRadius && localPrevY < chunkHeight + brushRadius;
+    
+    if (!currentInChunk && !prevInChunk) {
+      return; // Brush doesn't affect this chunk
+    }
+    
+    // Swap buffers
+    PGraphics temp = canvas;
+    canvas = canvasBuffer;
+    canvasBuffer = temp;
+    
+    // Set shader uniforms with local coordinates
+    paintShader.set("u_resolution", (float)CANVAS_WIDTH, (float)chunkHeight);
+    paintShader.set("u_mouse", globalMouseX, localMouseY);
+    paintShader.set("u_prevMouse", globalPrevX < 0 ? -1.0 : globalPrevX, 
+                                   globalPrevX < 0 ? -1.0 : localPrevY);
+    paintShader.set("u_brushSize", brushSize);
+    paintShader.set("u_isErasing", isErasing ? 1.0 : 0.0);
+    
+    // Apply shader
+    canvas.beginDraw();
+    canvas.shader(paintShader);
+    canvas.rect(0, 0, CANVAS_WIDTH, chunkHeight);
+    canvas.endDraw();
+    
+    isDirty = true;
+  }
+  
+  void render(float scrollY) {
+    if (isVisible(scrollY, height)) {
+      float renderY = yPosition - scrollY;
+      image(canvas, 0, renderY);
+    }
+  }
+  
+  PImage getImage() {
+    return canvas.get();
+  }
+}

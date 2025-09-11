@@ -1,0 +1,163 @@
+// Manages multiple chunks for infinite canvas
+class ChunkManager {
+  ArrayList<Chunk> chunks;
+  int chunkHeight;
+  int maxActiveChunks = 5; // Keep max 5 chunks in memory
+  
+  ChunkManager(int chunkHeight) {
+    this.chunkHeight = chunkHeight;
+    this.chunks = new ArrayList<Chunk>();
+    
+    // Create initial chunk
+    addChunk(0);
+  }
+  
+  void addChunk(int yPosition) {
+    Chunk newChunk = new Chunk(yPosition, chunkHeight);
+    chunks.add(newChunk);
+    sortChunks();
+  }
+  
+  void sortChunks() {
+    // Sort chunks by Y position
+    chunks.sort((a, b) -> Integer.compare(a.yPosition, b.yPosition));
+  }
+  
+  void ensureChunkAt(float globalY) {
+    // Don't create chunks for negative Y positions
+    if (globalY < 0) return;
+    
+    int chunkY = (int)(globalY / chunkHeight) * chunkHeight;
+    
+    // Check if chunk exists
+    boolean exists = false;
+    for (Chunk chunk : chunks) {
+      if (chunk.yPosition == chunkY) {
+        exists = true;
+        break;
+      }
+    }
+    
+    if (!exists) {
+      addChunk(chunkY);
+      
+      // Remove distant chunks if we have too many
+      if (chunks.size() > maxActiveChunks) {
+        removeDistantChunks(globalY);
+      }
+    }
+  }
+  
+  void removeDistantChunks(float centerY) {
+    if (chunks.size() <= maxActiveChunks) return;
+    
+    // Calculate distances and find furthest chunk
+    while (chunks.size() > maxActiveChunks) {
+      Chunk furthest = null;
+      float maxDist = 0;
+      
+      for (Chunk chunk : chunks) {
+        float dist = abs(chunk.yPosition + chunkHeight/2 - centerY);
+        if (dist > maxDist) {
+          maxDist = dist;
+          furthest = chunk;
+        }
+      }
+      
+      if (furthest != null && !furthest.isDirty) {
+        chunks.remove(furthest);
+      } else {
+        break; // Don't remove dirty chunks
+      }
+    }
+  }
+  
+  void applyPaint(float globalMouseX, float globalMouseY,
+                 float globalPrevX, float globalPrevY,
+                 float brushSize, boolean isErasing, PShader paintShader) {
+    // Ensure chunks exist for current and previous mouse positions
+    ensureChunkAt(globalMouseY);
+    if (globalPrevY >= 0) {
+      ensureChunkAt(globalPrevY);
+    }
+    
+    // Apply paint to all affected chunks
+    for (Chunk chunk : chunks) {
+      chunk.applyPaint(globalMouseX, globalMouseY, 
+                      globalPrevX, globalPrevY,
+                      brushSize, isErasing, paintShader);
+    }
+  }
+  
+  void render(float scrollY) {
+    // Ensure chunks exist for visible area
+    ensureChunkAt(scrollY);
+    ensureChunkAt(scrollY + height);
+    
+    // Render all visible chunks
+    for (Chunk chunk : chunks) {
+      chunk.render(scrollY);
+    }
+  }
+  
+  void clear() {
+    for (Chunk chunk : chunks) {
+      chunk.clear();
+    }
+  }
+  
+  float getMaxY() {
+    if (chunks.isEmpty()) return 0;
+    
+    float maxY = 0;
+    for (Chunk chunk : chunks) {
+      if (chunk.isDirty) {
+        maxY = max(maxY, chunk.yPosition + chunkHeight);
+      }
+    }
+    return maxY;
+  }
+  
+  PImage exportFullCanvas() {
+    if (chunks.isEmpty()) return null;
+    
+    // Find bounds of all dirty chunks
+    int minY = Integer.MAX_VALUE;
+    int maxY = Integer.MIN_VALUE;
+    
+    for (Chunk chunk : chunks) {
+      if (chunk.isDirty) {
+        minY = min(minY, chunk.yPosition);
+        maxY = max(maxY, chunk.yPosition + chunkHeight);
+      }
+    }
+    
+    if (minY == Integer.MAX_VALUE) {
+      // No dirty chunks, export single empty chunk
+      return chunks.get(0).getImage();
+    }
+    
+    // Create full canvas image
+    int totalHeight = maxY - minY;
+    PGraphics fullCanvas = createGraphics(CANVAS_WIDTH, totalHeight, P2D);
+    fullCanvas.beginDraw();
+    fullCanvas.background(255);
+    
+    // Draw all dirty chunks
+    for (Chunk chunk : chunks) {
+      if (chunk.isDirty) {
+        fullCanvas.image(chunk.getImage(), 0, chunk.yPosition - minY);
+      }
+    }
+    
+    fullCanvas.endDraw();
+    return fullCanvas.get();
+  }
+  
+  void debugInfo() {
+    println("Active chunks: " + chunks.size());
+    for (Chunk chunk : chunks) {
+      println("  Chunk at Y:" + chunk.yPosition + " (dirty: " + chunk.isDirty + ")");
+    }
+  }
+}
