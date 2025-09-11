@@ -1,4 +1,4 @@
-// Infinite Canvas Painting App - GLSL Version
+// Infinite Canvas Painting App - GLSL Version (OPTIMIZED)
 // For thermal printer output (576px width)
 // ALL rendering done with GLSL shaders
 
@@ -13,13 +13,14 @@ ArrayList<Integer> chunkPositions;
 final int CANVAS_WIDTH = 576;
 final int CHUNK_HEIGHT = 1024;
 final int SCREEN_HEIGHT = 324;
+final int MAX_CHUNKS = 20;  // Memory limit
 
 // Drawing state
 boolean isDrawing = false;
 boolean isErasing = false;
 float brushSize = 2.0;  // Default 2px
 float scrollY = 0;
-float scrollVelocity = 0;
+boolean needsRedraw = true;  // Optimization flag
 
 // Mouse state for shader
 PVector currentMouse = new PVector(-1, -1);
@@ -31,12 +32,14 @@ float displayScale = 1.0;
 
 void setup() {
   fullScreen(P3D);  // Fullscreen
+  noSmooth();  // Disable antialiasing for pixel-perfect rendering
   
   // Calculate scale to fill screen (use larger scale to fill entire screen)
   displayScale = max((float)width / CANVAS_WIDTH, (float)height / SCREEN_HEIGHT);
   
   // Create low-res canvas for actual drawing
   lowResCanvas = createGraphics(CANVAS_WIDTH, SCREEN_HEIGHT, P3D);
+  lowResCanvas.noSmooth();  // No antialiasing on low-res canvas too
   
   // Initialize GPU texture arrays
   chunkTextures = new ArrayList<PGraphics>();
@@ -49,9 +52,13 @@ void setup() {
   // Create initial chunk
   createGPUChunk(0);
   
-  println("GLSL-based infinite canvas initialized");
+  // OPTIMIZATION: Only render when needed
+  noLoop();
+  
+  println("GLSL-based infinite canvas initialized (optimized)");
   println("Canvas width: " + CANVAS_WIDTH + "px");
-  println("All rendering on GPU with GLSL shaders");
+  println("On-demand GPU rendering enabled");
+  println("Max chunks: " + MAX_CHUNKS);
   println("Controls:");
   println("  - Left click: Draw");
   println("  - Right click: Erase");
@@ -66,9 +73,19 @@ void createGPUChunk(int yPos) {
     if (chunkPositions.get(i) == yPos) return;
   }
   
+  // OPTIMIZATION: Limit chunks to prevent memory bloat
+  if (chunkPositions.size() >= MAX_CHUNKS) {
+    println("Chunk limit reached (" + MAX_CHUNKS + " chunks max)");
+    return;
+  }
+  
   // Create two GPU textures for ping-pong
   PGraphics texture = createGraphics(CANVAS_WIDTH, CHUNK_HEIGHT, P3D);
   PGraphics buffer = createGraphics(CANVAS_WIDTH, CHUNK_HEIGHT, P3D);
+  
+  // No antialiasing on chunks
+  texture.noSmooth();
+  buffer.noSmooth();
   
   // Initialize to white
   texture.beginDraw();
@@ -139,18 +156,15 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
 }
 
 void draw() {
+  // OPTIMIZATION: Early return if nothing to update
+  if (!needsRedraw && !isDrawing && !isErasing) return;
+  
   // Calculate max scroll based on actual content
   float maxScroll = getMaxContentY() - SCREEN_HEIGHT;
   maxScroll = max(0, maxScroll);
+  scrollY = constrain(scrollY, 0, maxScroll);
   
-  // Handle scrolling with limits
-  if (abs(scrollVelocity) > 0.1) {
-    scrollY += scrollVelocity;
-    scrollY = constrain(scrollY, 0, maxScroll);
-    scrollVelocity *= 0.9;
-  }
-  
-  // Apply painting (adjust mouse coords for scaling)
+  // OPTIMIZATION: Only process painting when actively drawing
   if (isDrawing || isErasing) {
     float globalMouseX = mouseX / displayScale;
     float globalMouseY = mouseY / displayScale + scrollY;
@@ -168,6 +182,9 @@ void draw() {
     }
     
     prevMouse.set(globalMouseX, globalMouseY);
+  } else if (prevMouse.x >= 0) {
+    // Reset when not drawing
+    prevMouse.set(-1, -1);
   }
   
   // Render to low-res canvas first
@@ -201,6 +218,9 @@ void draw() {
   scale(displayScale);
   image(lowResCanvas, 0, 0);
   popMatrix();
+  
+  // Reset redraw flag
+  needsRedraw = false;
 }
 
 void drawLowResUI() {
@@ -236,16 +256,37 @@ void mousePressed() {
   }
   // Adjust for scale
   prevMouse.set(mouseX / displayScale, mouseY / displayScale + scrollY);
+  loop();  // Start rendering
 }
 
 void mouseReleased() {
   isDrawing = false;
   isErasing = false;
   prevMouse.set(-1, -1);
+  needsRedraw = true;
+  redraw();  // Final frame
+  noLoop();  // Stop rendering
+}
+
+void mouseMoved() {
+  // Brush preview follows mouse
+  needsRedraw = true;
+  redraw();
+}
+
+void mouseDragged() {
+  // Keep rendering while dragging
+  needsRedraw = true;
+  redraw();
 }
 
 void mouseWheel(MouseEvent event) {
-  scrollVelocity += event.getCount() * 0.7;  // トラックパッド用に最適化
+  // OPTIMIZATION: Direct scroll, no velocity
+  float maxScroll = getMaxContentY() - SCREEN_HEIGHT;
+  scrollY += event.getCount() * 0.7;  // Back to trackpad-optimized speed
+  scrollY = constrain(scrollY, 0, max(0, maxScroll));
+  needsRedraw = true;
+  redraw();
 }
 
 void keyPressed() {
@@ -253,10 +294,14 @@ void keyPressed() {
     case 'q':
     case 'Q':
       brushSize = min(brushSize + 5, 100);
+      needsRedraw = true;
+      redraw();
       break;
     case 'a':
     case 'A':
       brushSize = max(brushSize - 5, 1);  // Minimum 1px
+      needsRedraw = true;
+      redraw();
       break;
     case 'p':
     case 'P':
@@ -265,8 +310,19 @@ void keyPressed() {
   }
   
   if (key == CODED) {
-    if (keyCode == UP) scrollVelocity -= 20;
-    if (keyCode == DOWN) scrollVelocity += 20;
+    float maxScroll = getMaxContentY() - SCREEN_HEIGHT;
+    if (keyCode == UP) {
+      scrollY -= 20;
+      scrollY = constrain(scrollY, 0, max(0, maxScroll));
+      needsRedraw = true;
+      redraw();
+    }
+    if (keyCode == DOWN) {
+      scrollY += 20;
+      scrollY = constrain(scrollY, 0, max(0, maxScroll));
+      needsRedraw = true;
+      redraw();
+    }
   }
 }
 
@@ -281,24 +337,6 @@ float getMaxContentY() {
   
   // Add one more chunk height to show the next gray area
   return maxY + CHUNK_HEIGHT;
-}
-
-void clearCanvas() {
-  for (PGraphics chunk : chunkTextures) {
-    chunk.beginDraw();
-    chunk.background(255);
-    chunk.endDraw();
-  }
-  for (PGraphics chunk : chunkBuffers) {
-    chunk.beginDraw();
-    chunk.background(255);
-    chunk.endDraw();
-  }
-  println("GPU textures cleared");
-}
-
-void saveCanvas() {
-  saveAndPrint(false);  // Just save, don't print
 }
 
 void saveAndPrint(boolean printToReceipt) {

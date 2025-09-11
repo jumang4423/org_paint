@@ -37,9 +37,9 @@ void main() {
         dist = sdSegment(pixelPos, u_prevMouse, u_mouse);
     }
     
-    // Create smooth brush mask
+    // Create hard-edged brush mask (no antialiasing)
     float brushRadius = u_brushSize * 0.5;
-    float mask = 1.0 - smoothstep(brushRadius - 2.0, brushRadius + 2.0, dist);
+    float mask = dist <= brushRadius ? 1.0 : 0.0;  // Hard cutoff, no smoothstep
     
     // Paint or erase
     vec4 paintColor = mix(vec4(0.0, 0.0, 0.0, 1.0), vec4(1.0, 1.0, 1.0, 1.0), u_isErasing);
