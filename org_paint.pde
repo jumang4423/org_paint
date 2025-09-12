@@ -3,6 +3,7 @@
 // ALL rendering done with GLSL shaders
 
 import java.io.*;
+import javax.sound.midi.*;
 
 PShader paintShader;
 ArrayList<PGraphics> chunkTextures;  // GPU textures
@@ -12,7 +13,7 @@ ArrayList<Integer> chunkPositions;
 // Canvas settings
 final int CANVAS_WIDTH = 576;
 final int CHUNK_HEIGHT = 1024;
-final int SCREEN_HEIGHT = 324;
+int SCREEN_HEIGHT = 324;  // Will be recalculated based on screen
 final int MAX_CHUNKS = 20;  // Memory limit
 
 // Drawing state
@@ -21,6 +22,8 @@ boolean isErasing = false;
 float brushSize = 2.0;  // Default 2px
 float scrollY = 0;
 boolean needsRedraw = true;  // Optimization flag
+boolean pendingSave = false;  // Flag for deferred save operation
+boolean pendingPrint = false;  // Flag for print after save
 
 // Mouse state for shader
 PVector currentMouse = new PVector(-1, -1);
@@ -30,14 +33,24 @@ PVector prevMouse = new PVector(-1, -1);
 PGraphics lowResCanvas;
 float displayScale = 1.0;
 
+// MIDI
+MidiDevice midiDevice = null;
+boolean midiConnected = false;
+volatile float pendingBrushSize = -1;  // Thread-safe variable for MIDI updates
+int lastMidiCheck = 0;
+float lastKnownBrushSize = 2.0;  // Track last brush size to detect changes
+
 void setup() {
   fullScreen(P3D);  // Fullscreen
   noSmooth();  // Disable antialiasing for pixel-perfect rendering
   
-  // Calculate scale to fill screen (use larger scale to fill entire screen)
-  displayScale = max((float)width / CANVAS_WIDTH, (float)height / SCREEN_HEIGHT);
+  // Calculate scale to fill screen width (prioritize full 576px width accessibility)
+  displayScale = (float)width / CANVAS_WIDTH;
   
-  // Create low-res canvas for actual drawing
+  // Calculate screen height based on actual window height
+  SCREEN_HEIGHT = (int)(height / displayScale);
+  
+  // Create low-res canvas for actual drawing (full screen height)
   lowResCanvas = createGraphics(CANVAS_WIDTH, SCREEN_HEIGHT, P3D);
   lowResCanvas.noSmooth();  // No antialiasing on low-res canvas too
   
@@ -52,6 +65,9 @@ void setup() {
   // Create initial chunk
   createGPUChunk(0);
   
+  // Initialize MIDI
+  initMIDI();
+  
   // OPTIMIZATION: Only render when needed
   noLoop();
   
@@ -65,6 +81,9 @@ void setup() {
   println("  - Mouse wheel/Arrow keys: Scroll");
   println("  - Q/A: Brush size");
   println("  - P: Save and Print to thermal printer");
+  if (midiConnected) {
+    println("  - MIDI CC1: Brush size (1-8px)");
+  }
 }
 
 void createGPUChunk(int yPos) {
@@ -156,6 +175,21 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
 }
 
 void draw() {
+  // Check for pending save operation (must be done in draw loop for OpenGL)
+  if (pendingSave) {
+    saveAndPrint(pendingPrint);
+    pendingSave = false;
+    pendingPrint = false;
+    return;  // Don't do other drawing this frame
+  }
+  
+  // Check for pending MIDI updates (thread-safe)
+  if (pendingBrushSize > 0) {
+    brushSize = pendingBrushSize;
+    pendingBrushSize = -1;
+    needsRedraw = true;
+  }
+  
   // OPTIMIZATION: Early return if nothing to update
   if (!needsRedraw && !isDrawing && !isErasing) return;
   
@@ -243,7 +277,11 @@ void drawLowResUI() {
   lowResCanvas.text("MODE: " + (isErasing ? "ERASE" : "DRAW"), 2, 2);
   lowResCanvas.text("BRUSH: " + (int)brushSize + "px", 2, 10);
   lowResCanvas.text("Y: " + (int)scrollY, 2, 18);
-  lowResCanvas.text("FPS: " + (int)frameRate, 2, 26);
+  lowResCanvas.text("X: " + (int)lowResMouseX + "/" + CANVAS_WIDTH, 2, 26);  // Debug X position
+  lowResCanvas.text("FPS: " + (int)frameRate, 2, 34);
+  if (midiConnected) {
+    lowResCanvas.text("MIDI: ON", 2, 42);
+  }
 }
 
 void mousePressed() {
@@ -290,22 +328,32 @@ void mouseWheel(MouseEvent event) {
 }
 
 void keyPressed() {
+  // Handle ESC key for clean exit
+  if (key == ESC) {
+    key = 0;  // Prevent default ESC behavior
+    exit();   // Call our custom exit method
+    return;
+  }
+  
   switch(key) {
     case 'q':
     case 'Q':
-      brushSize = min(brushSize + 5, 100);
+      brushSize = min(brushSize + 1, 8);  // Max 8px
       needsRedraw = true;
       redraw();
       break;
     case 'a':
     case 'A':
-      brushSize = max(brushSize - 5, 1);  // Minimum 1px
+      brushSize = max(brushSize - 1, 1);  // Minimum 1px
       needsRedraw = true;
       redraw();
       break;
     case 'p':
     case 'P':
-      saveAndPrint(true);  // Save and print to thermal printer
+      // Defer save operation to draw loop (for OpenGL safety)
+      pendingSave = true;
+      pendingPrint = true;
+      loop();  // Ensure draw() is called
       break;
   }
   
@@ -363,10 +411,14 @@ void saveAndPrint(boolean printToReceipt) {
     return;
   }
   
-  // Create output with JAVA2D renderer for compatibility
-  PGraphics output = createGraphics(CANVAS_WIDTH, maxY - minY, JAVA2D);
-  output.beginDraw();
-  output.background(255);
+  // Create output image directly without using PGraphics
+  PImage output = createImage(CANVAS_WIDTH, maxY - minY, RGB);
+  output.loadPixels();
+  
+  // Fill with white background
+  for (int i = 0; i < output.pixels.length; i++) {
+    output.pixels[i] = color(255);
+  }
   
   // Copy each chunk to the output
   for (int i = 0; i < chunkTextures.size(); i++) {
@@ -375,10 +427,23 @@ void saveAndPrint(boolean printToReceipt) {
     
     // Get the pixel data from the chunk
     chunk.loadPixels();
-    output.image(chunk, 0, chunkY - minY);
+    
+    // Copy pixels manually
+    for (int y = 0; y < CHUNK_HEIGHT; y++) {
+      int outputY = chunkY - minY + y;
+      if (outputY >= 0 && outputY < output.height) {
+        for (int x = 0; x < CANVAS_WIDTH; x++) {
+          int chunkIndex = y * CANVAS_WIDTH + x;
+          int outputIndex = outputY * CANVAS_WIDTH + x;
+          if (chunkIndex < chunk.pixels.length && outputIndex < output.pixels.length) {
+            output.pixels[outputIndex] = chunk.pixels[chunkIndex];
+          }
+        }
+      }
+    }
   }
   
-  output.endDraw();
+  output.updatePixels();
   
   // Save main output file
   String filename = "output.png";
@@ -426,4 +491,97 @@ void printToThermalPrinter(String filename) {
     println("Error printing: " + e.getMessage());
     e.printStackTrace();
   }
+}
+
+// MIDI Functions using Java's built-in MIDI
+void initMIDI() {
+  try {
+    MidiDevice.Info[] infos = MidiSystem.getMidiDeviceInfo();
+    
+    println("\nAvailable MIDI devices:");
+    for (int i = 0; i < infos.length; i++) {
+      println("[" + i + "] " + infos[i].getName() + " - " + infos[i].getDescription());
+    }
+    
+    // Find Arduino Leonardo
+    for (MidiDevice.Info info : infos) {
+      if (info.getName().contains("Arduino Leonardo")) {
+        MidiDevice device = MidiSystem.getMidiDevice(info);
+        
+        // Check if it's an input device (has transmitter)
+        if (device.getMaxTransmitters() != 0) {
+          device.open();
+          
+          // Set up receiver
+          Transmitter transmitter = device.getTransmitter();
+          transmitter.setReceiver(new MidiReceiver());
+          
+          midiDevice = device;
+          midiConnected = true;
+          println("\nMIDI connected to: " + info.getName());
+          break;
+        }
+      }
+    }
+    
+    if (!midiConnected) {
+      println("Arduino Leonardo MIDI device not found or not available as input");
+    }
+    
+  } catch (Exception e) {
+    println("MIDI initialization failed: " + e.getMessage());
+    e.printStackTrace();
+    midiConnected = false;
+  }
+}
+
+// Custom MIDI receiver class
+class MidiReceiver implements Receiver {
+  public void send(MidiMessage message, long timeStamp) {
+    if (message instanceof ShortMessage) {
+      ShortMessage sm = (ShortMessage) message;
+      
+      // Check for Control Change message (0xB0)
+      if (sm.getCommand() == ShortMessage.CONTROL_CHANGE) {
+        int channel = sm.getChannel() + 1;  // MIDI channels are 0-based
+        int ccNumber = sm.getData1();
+        int value = sm.getData2();
+        
+        // Handle CC1 for brush size
+        if (ccNumber == 1) {
+          // Map MIDI value (0-127) to brush size (1-8px)
+          float newBrushSize = map(value, 0, 127, 1, 8);
+          newBrushSize = constrain(newBrushSize, 1, 8);
+          
+          // Set pending brush size (thread-safe)
+          pendingBrushSize = newBrushSize;
+          
+          // Trigger redraw to update display
+          redraw();
+          
+          // Visual feedback
+          println("MIDI CC1: value=" + value + " → Brush size = " + (int)newBrushSize + "px");
+        }
+      }
+    }
+  }
+  
+  public void close() {
+    // Cleanup if needed
+  }
+}
+
+// Clean up on exit
+void exit() {
+  // Clean up MIDI device
+  if (midiDevice != null && midiDevice.isOpen()) {
+    try {
+      midiDevice.close();
+    } catch (Exception e) {
+      // Ignore errors during shutdown
+    }
+  }
+  
+  // Call parent exit
+  super.exit();
 }
