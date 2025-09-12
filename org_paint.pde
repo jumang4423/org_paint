@@ -25,9 +25,29 @@ boolean needsRedraw = true;  // Optimization flag
 boolean pendingSave = false;  // Flag for deferred save operation
 boolean pendingPrint = false;  // Flag for print after save
 
+// Zoom state
+boolean isSelectingZoom = false;  // Currently selecting zoom area
+boolean isZoomed = false;  // Currently in zoomed view
+PVector zoomSelectionStart = new PVector(-1, -1);
+PVector zoomSelectionEnd = new PVector(-1, -1);
+float zoomScale = 1.0;
+float zoomOffsetX = 0;
+float zoomOffsetY = 0;
+boolean spaceKeyPressed = false;
+
 // Mouse state for shader
 PVector currentMouse = new PVector(-1, -1);
 PVector prevMouse = new PVector(-1, -1);
+
+// Undo/Redo state (single history)
+ArrayList<PGraphics> undoChunkTextures;  // Store previous state
+ArrayList<PGraphics> redoChunkTextures;  // Store state for redo
+boolean hasUndo = false;
+boolean hasRedo = false;
+boolean captureUndoState = false;  // Flag to capture state before next paint
+boolean pendingUndo = false;  // Defer undo to draw loop
+boolean pendingRedo = false;  // Defer redo to draw loop
+int undoRedrawFrames = 0;  // Counter to ensure proper screen update after undo/redo
 
 // Scaling for display
 PGraphics lowResCanvas;
@@ -59,6 +79,10 @@ void setup() {
   chunkBuffers = new ArrayList<PGraphics>();
   chunkPositions = new ArrayList<Integer>();
   
+  // Initialize undo/redo arrays
+  undoChunkTextures = new ArrayList<PGraphics>();
+  redoChunkTextures = new ArrayList<PGraphics>();
+  
   // Load final GLSL paint shader
   paintShader = loadShader("paint_final_frag.glsl");
   
@@ -81,9 +105,106 @@ void setup() {
   println("  - Mouse wheel/Arrow keys: Scroll");
   println("  - Q/A: Brush size");
   println("  - P: Save and Print to thermal printer");
+  println("  - Space: Hold to select zoom area, press again to exit zoom");
+  println("  - Cmd+Z: Undo last action");
+  println("  - Cmd+Shift+Z: Redo last action");
   if (midiConnected) {
     println("  - MIDI CC1: Brush size (1-8px)");
   }
+}
+
+// Save current canvas state for undo
+void saveUndoState() {
+  // Clear previous undo state
+  for (PGraphics g : undoChunkTextures) {
+    if (g != null) g.dispose();
+  }
+  undoChunkTextures.clear();
+  
+  // Copy all current chunks
+  for (PGraphics chunk : chunkTextures) {
+    PGraphics copy = createGraphics(chunk.width, chunk.height, P3D);
+    copy.noSmooth();
+    copy.beginDraw();
+    copy.image(chunk, 0, 0);
+    copy.endDraw();
+    undoChunkTextures.add(copy);
+  }
+  
+  hasUndo = true;
+  hasRedo = false;  // Clear redo when new action is performed
+  
+  // Clear redo state
+  for (PGraphics g : redoChunkTextures) {
+    if (g != null) g.dispose();
+  }
+  redoChunkTextures.clear();
+}
+
+// Perform undo operation
+void performUndo() {
+  if (!hasUndo || undoChunkTextures.isEmpty()) return;
+  
+  // Save current state for redo
+  for (PGraphics g : redoChunkTextures) {
+    if (g != null) g.dispose();
+  }
+  redoChunkTextures.clear();
+  
+  for (PGraphics chunk : chunkTextures) {
+    PGraphics copy = createGraphics(chunk.width, chunk.height, P3D);
+    copy.noSmooth();
+    copy.beginDraw();
+    copy.image(chunk, 0, 0);
+    copy.endDraw();
+    redoChunkTextures.add(copy);
+  }
+  
+  // Restore undo state
+  for (int i = 0; i < min(chunkTextures.size(), undoChunkTextures.size()); i++) {
+    PGraphics undoChunk = undoChunkTextures.get(i);
+    PGraphics currentChunk = chunkTextures.get(i);
+    currentChunk.beginDraw();
+    currentChunk.image(undoChunk, 0, 0);
+    currentChunk.endDraw();
+  }
+  
+  hasRedo = true;
+  hasUndo = false;
+  needsRedraw = true;
+}
+
+// Perform redo operation
+void performRedo() {
+  if (!hasRedo || redoChunkTextures.isEmpty()) return;
+  
+  // Save current state for undo
+  for (PGraphics g : undoChunkTextures) {
+    if (g != null) g.dispose();
+  }
+  undoChunkTextures.clear();
+  
+  for (PGraphics chunk : chunkTextures) {
+    PGraphics copy = createGraphics(chunk.width, chunk.height, P3D);
+    copy.noSmooth();
+    copy.beginDraw();
+    copy.image(chunk, 0, 0);
+    copy.endDraw();
+    undoChunkTextures.add(copy);
+  }
+  
+  // Restore redo state
+  for (int i = 0; i < min(chunkTextures.size(), redoChunkTextures.size()); i++) {
+    PGraphics redoChunk = redoChunkTextures.get(i);
+    PGraphics currentChunk = chunkTextures.get(i);
+    currentChunk.beginDraw();
+    currentChunk.image(redoChunk, 0, 0);
+    currentChunk.endDraw();
+  }
+  
+  hasUndo = true;
+  hasRedo = false;
+  needsRedraw = true;
 }
 
 void createGPUChunk(int yPos) {
@@ -183,6 +304,22 @@ void draw() {
     return;  // Don't do other drawing this frame
   }
   
+  // Check for pending undo/redo operations (must be done in draw loop for OpenGL)
+  if (pendingUndo) {
+    performUndo();
+    pendingUndo = false;
+    needsRedraw = true;
+    undoRedrawFrames = 3;  // Ensure 3 frames of rendering
+    // Don't return here - continue to render the frame
+  }
+  if (pendingRedo) {
+    performRedo();
+    pendingRedo = false;
+    needsRedraw = true;
+    undoRedrawFrames = 3;  // Ensure 3 frames of rendering
+    // Don't return here - continue to render the frame
+  }
+  
   // Check for pending MIDI updates (thread-safe)
   if (pendingBrushSize > 0) {
     brushSize = pendingBrushSize;
@@ -190,18 +327,34 @@ void draw() {
     needsRedraw = true;
   }
   
-  // OPTIMIZATION: Early return if nothing to update
-  if (!needsRedraw && !isDrawing && !isErasing) return;
+  // OPTIMIZATION: Early return if nothing to update (but keep going if undo frames are active)
+  if (!needsRedraw && !isDrawing && !isErasing && undoRedrawFrames == 0) return;
   
   // Calculate max scroll based on actual content
   float maxScroll = getMaxContentY() - SCREEN_HEIGHT;
   maxScroll = max(0, maxScroll);
   scrollY = constrain(scrollY, 0, maxScroll);
   
-  // OPTIMIZATION: Only process painting when actively drawing
-  if (isDrawing || isErasing) {
-    float globalMouseX = mouseX / displayScale;
-    float globalMouseY = mouseY / displayScale + scrollY;
+  // OPTIMIZATION: Only process painting when actively drawing (and not selecting zoom)
+  if ((isDrawing || isErasing) && !isSelectingZoom) {
+    // Capture undo state before first paint stroke
+    if (captureUndoState) {
+      saveUndoState();
+      captureUndoState = false;
+    }
+    
+    // Transform mouse coordinates based on zoom state
+    float globalMouseX, globalMouseY;
+    
+    if (isZoomed) {
+      // In zoomed mode, transform mouse from screen space to zoomed canvas space
+      globalMouseX = (mouseX / displayScale - zoomOffsetX) / zoomScale;
+      globalMouseY = (mouseY / displayScale - zoomOffsetY) / zoomScale + scrollY;
+    } else {
+      // Normal mode
+      globalMouseX = mouseX / displayScale;
+      globalMouseY = mouseY / displayScale + scrollY;
+    }
     
     // Find affected chunks
     int startChunk = (int)((globalMouseY - brushSize/2) / CHUNK_HEIGHT) * CHUNK_HEIGHT;
@@ -225,6 +378,13 @@ void draw() {
   lowResCanvas.beginDraw();
   lowResCanvas.background(200);
   
+  // Apply zoom transformation if zoomed
+  if (isZoomed) {
+    lowResCanvas.pushMatrix();
+    lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
+    lowResCanvas.scale(zoomScale);
+  }
+  
   // Render visible chunks to low-res canvas
   int startChunkY = max(0, (int)(scrollY / CHUNK_HEIGHT) * CHUNK_HEIGHT);
   int endChunkY = (int)((scrollY + SCREEN_HEIGHT) / CHUNK_HEIGHT + 1) * CHUNK_HEIGHT;
@@ -240,8 +400,24 @@ void draw() {
     }
   }
   
-  // Draw UI on low-res canvas
+  if (isZoomed) {
+    lowResCanvas.popMatrix();
+  }
+  
+  // Draw UI on low-res canvas (always on top, not zoomed)
   drawLowResUI();
+  
+  // Draw zoom selection rectangle if selecting
+  if (isSelectingZoom && zoomSelectionStart.x >= 0) {
+    lowResCanvas.noFill();
+    lowResCanvas.stroke(100, 200, 255);
+    lowResCanvas.strokeWeight(2);
+    float x1 = min(zoomSelectionStart.x, zoomSelectionEnd.x);
+    float y1 = min(zoomSelectionStart.y, zoomSelectionEnd.y);
+    float x2 = max(zoomSelectionStart.x, zoomSelectionEnd.x);
+    float y2 = max(zoomSelectionStart.y, zoomSelectionEnd.y);
+    lowResCanvas.rect(x1, y1, x2 - x1, y2 - y1);
+  }
   
   lowResCanvas.endDraw();
   
@@ -255,6 +431,15 @@ void draw() {
   
   // Reset redraw flag
   needsRedraw = false;
+  
+  // Handle undo/redo frame counter
+  if (undoRedrawFrames > 0) {
+    undoRedrawFrames--;
+    needsRedraw = true;  // Keep rendering
+    if (undoRedrawFrames == 0) {
+      noLoop();  // Stop loop after undo/redo frames complete
+    }
+  }
 }
 
 void drawLowResUI() {
@@ -264,36 +449,89 @@ void drawLowResUI() {
   float lowResMouseX = mouseX / displayScale;
   float lowResMouseY = mouseY / displayScale;
   
-  lowResCanvas.noFill();
-  lowResCanvas.stroke(isErasing ? color(255, 100, 100) : color(100, 100, 255));
-  lowResCanvas.strokeWeight(1);  // 1px in low-res
-  lowResCanvas.ellipse(lowResMouseX, lowResMouseY, brushSize, brushSize);
+  // Transform brush position if zoomed
+  if (isZoomed && !isSelectingZoom) {
+    float canvasX = (lowResMouseX - zoomOffsetX) / zoomScale;
+    float canvasY = (lowResMouseY - zoomOffsetY) / zoomScale;
+    
+    lowResCanvas.noFill();
+    lowResCanvas.stroke(isErasing ? color(255, 100, 100) : color(100, 100, 255));
+    lowResCanvas.strokeWeight(1);
+    
+    // Draw brush at zoomed position
+    lowResCanvas.pushMatrix();
+    lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
+    lowResCanvas.scale(zoomScale);
+    lowResCanvas.ellipse(canvasX, canvasY, brushSize, brushSize);
+    lowResCanvas.popMatrix();
+  } else if (!isSelectingZoom) {
+    // Normal brush preview
+    lowResCanvas.noFill();
+    lowResCanvas.stroke(isErasing ? color(255, 100, 100) : color(100, 100, 255));
+    lowResCanvas.strokeWeight(1);
+    lowResCanvas.ellipse(lowResMouseX, lowResMouseY, brushSize, brushSize);
+  }
   
   // Info text - BLACK color for white background
   lowResCanvas.fill(0);  // Black text
   lowResCanvas.noStroke();
   lowResCanvas.textAlign(LEFT, TOP);
   lowResCanvas.textSize(8);  // Small pixel font size
-  lowResCanvas.text("MODE: " + (isErasing ? "ERASE" : "DRAW"), 2, 2);
+  
+  if (isSelectingZoom) {
+    lowResCanvas.text("SELECTING ZOOM AREA", 2, 2);
+  } else if (isZoomed) {
+    lowResCanvas.text("ZOOMED: " + nf(zoomScale, 1, 1) + "x (SPACE to exit)", 2, 2);
+  } else {
+    lowResCanvas.text("MODE: " + (isErasing ? "ERASE" : "DRAW"), 2, 2);
+  }
+  
   lowResCanvas.text("BRUSH: " + (int)brushSize + "px", 2, 10);
-  lowResCanvas.text("Y: " + (int)scrollY, 2, 18);
-  lowResCanvas.text("X: " + (int)lowResMouseX + "/" + CANVAS_WIDTH, 2, 26);  // Debug X position
-  lowResCanvas.text("FPS: " + (int)frameRate, 2, 34);
+  if (!isZoomed) {
+    lowResCanvas.text("Y: " + (int)scrollY, 2, 18);
+  }
+  lowResCanvas.text("X: " + (int)lowResMouseX + "/" + CANVAS_WIDTH, 2, isZoomed ? 18 : 26);
+  lowResCanvas.text("FPS: " + (int)frameRate, 2, isZoomed ? 26 : 34);
   if (midiConnected) {
-    lowResCanvas.text("MIDI: ON", 2, 42);
+    lowResCanvas.text("MIDI: ON", 2, isZoomed ? 34 : 42);
   }
 }
 
 void mousePressed() {
+  // If selecting zoom, record start position
+  if (isSelectingZoom) {
+    zoomSelectionStart.set(mouseX / displayScale, mouseY / displayScale);
+    zoomSelectionEnd.set(mouseX / displayScale, mouseY / displayScale);
+    needsRedraw = true;
+    loop();
+    return;
+  }
+  
+  // Don't allow painting while space is pressed (might be about to select zoom)
+  if (spaceKeyPressed) {
+    return;
+  }
+  
   if (mouseButton == LEFT) {
+    // Mark that we need to save state before first paint
+    captureUndoState = true;
     isDrawing = true;
     isErasing = false;
   } else if (mouseButton == RIGHT) {
+    // Mark that we need to save state before first paint
+    captureUndoState = true;
     isDrawing = true;
     isErasing = true;
   }
-  // Adjust for scale
-  prevMouse.set(mouseX / displayScale, mouseY / displayScale + scrollY);
+  
+  // Adjust for scale and zoom
+  if (isZoomed) {
+    float canvasX = (mouseX / displayScale - zoomOffsetX) / zoomScale;
+    float canvasY = (mouseY / displayScale - zoomOffsetY) / zoomScale + scrollY;
+    prevMouse.set(canvasX, canvasY);
+  } else {
+    prevMouse.set(mouseX / displayScale, mouseY / displayScale + scrollY);
+  }
   loop();  // Start rendering
 }
 
@@ -313,12 +551,25 @@ void mouseMoved() {
 }
 
 void mouseDragged() {
+  // If selecting zoom, update end position
+  if (isSelectingZoom) {
+    zoomSelectionEnd.set(mouseX / displayScale, mouseY / displayScale);
+    needsRedraw = true;
+    redraw();
+    return;
+  }
+  
   // Keep rendering while dragging
   needsRedraw = true;
   redraw();
 }
 
 void mouseWheel(MouseEvent event) {
+  // Disable scrolling when zoomed
+  if (isZoomed) {
+    return;
+  }
+  
   // OPTIMIZATION: Direct scroll, no velocity
   float maxScroll = getMaxContentY() - SCREEN_HEIGHT;
   scrollY += event.getCount() * 0.7;  // Back to trackpad-optimized speed
@@ -332,6 +583,52 @@ void keyPressed() {
   if (key == ESC) {
     key = 0;  // Prevent default ESC behavior
     exit();   // Call our custom exit method
+    return;
+  }
+  
+  // Handle Cmd+Z for undo and Cmd+Shift+Z for redo
+  boolean isMac = System.getProperty("os.name").toLowerCase().contains("mac");
+  boolean cmdPressed = isMac ? (keyEvent.isMetaDown()) : (keyEvent.isControlDown());
+  
+  if (cmdPressed) {
+    if (key == 'z' || key == 'Z') {
+      if (keyEvent.isShiftDown()) {
+        // Cmd+Shift+Z - Redo (deferred to draw loop)
+        pendingRedo = true;
+        needsRedraw = true;
+        loop();  // Start rendering loop (will stop after frames complete)
+      } else {
+        // Cmd+Z - Undo (deferred to draw loop)
+        pendingUndo = true;
+        needsRedraw = true;
+        loop();  // Start rendering loop (will stop after frames complete)
+      }
+      return;
+    }
+  }
+  
+  // Handle Space key for zoom
+  if (key == ' ') {
+    if (!spaceKeyPressed) {
+      spaceKeyPressed = true;
+      
+      if (isZoomed) {
+        // Exit zoom mode
+        isZoomed = false;
+        zoomScale = 1.0;
+        zoomOffsetX = 0;
+        zoomOffsetY = 0;
+        needsRedraw = true;
+        redraw();
+      } else {
+        // Enter zoom selection mode
+        isSelectingZoom = true;
+        zoomSelectionStart.set(-1, -1);
+        zoomSelectionEnd.set(-1, -1);
+        needsRedraw = true;
+        loop();
+      }
+    }
     return;
   }
   
@@ -358,6 +655,11 @@ void keyPressed() {
   }
   
   if (key == CODED) {
+    // Disable arrow key scrolling when zoomed
+    if (isZoomed) {
+      return;
+    }
+    
     float maxScroll = getMaxContentY() - SCREEN_HEIGHT;
     if (keyCode == UP) {
       scrollY -= 20;
@@ -368,6 +670,59 @@ void keyPressed() {
     if (keyCode == DOWN) {
       scrollY += 20;
       scrollY = constrain(scrollY, 0, max(0, maxScroll));
+      needsRedraw = true;
+      redraw();
+    }
+  }
+}
+
+void keyReleased() {
+  // Handle Space key release for zoom
+  if (key == ' ') {
+    spaceKeyPressed = false;
+    
+    if (isSelectingZoom && zoomSelectionStart.x >= 0) {
+      // Calculate zoom from selection
+      float x1 = min(zoomSelectionStart.x, zoomSelectionEnd.x);
+      float y1 = min(zoomSelectionStart.y, zoomSelectionEnd.y);
+      float x2 = max(zoomSelectionStart.x, zoomSelectionEnd.x);
+      float y2 = max(zoomSelectionStart.y, zoomSelectionEnd.y);
+      
+      float selWidth = x2 - x1;
+      float selHeight = y2 - y1;
+      
+      // Minimum selection size to zoom (20px)
+      if (selWidth > 20 && selHeight > 20) {
+        // Calculate zoom scale to fit selection to screen
+        float scaleX = CANVAS_WIDTH / selWidth;
+        float scaleY = SCREEN_HEIGHT / selHeight;
+        zoomScale = min(scaleX, scaleY);
+        
+        // Limit zoom scale to reasonable range (1.5x - 10x)
+        zoomScale = constrain(zoomScale, 1.5, 10.0);
+        
+        // Calculate offset to center the selection
+        float centerX = (x1 + x2) / 2;
+        float centerY = (y1 + y2) / 2;
+        
+        // Calculate offset so that zoomed area is centered
+        zoomOffsetX = CANVAS_WIDTH / 2 - centerX * zoomScale;
+        zoomOffsetY = SCREEN_HEIGHT / 2 - centerY * zoomScale;
+        
+        // Apply zoom
+        isZoomed = true;
+        isSelectingZoom = false;
+        needsRedraw = true;
+        redraw();
+      } else {
+        // Selection too small, cancel
+        isSelectingZoom = false;
+        needsRedraw = true;
+        redraw();
+      }
+    } else {
+      // No selection made, cancel
+      isSelectingZoom = false;
       needsRedraw = true;
       redraw();
     }
