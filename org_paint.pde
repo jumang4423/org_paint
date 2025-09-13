@@ -77,6 +77,10 @@ PGraphics rainbowBuffer;  // Cache for rainbow pattern
 int rainbowUpdateCounter = 0;
 float displayScale = 1.0;
 
+// Startup screen
+boolean showStartupScreen = true;
+float startupAnimTime = 0;
+
 // MIDI
 MidiDevice midiDevice = null;
 boolean midiConnected = false;
@@ -369,6 +373,12 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
 }
 
 void draw() {
+  // Show startup screen if needed
+  if (showStartupScreen) {
+    drawStartupScreen();
+    return;
+  }
+  
   // Check for pending save operation (must be done in draw loop for OpenGL)
   if (pendingSave) {
     saveAndPrint(pendingPrint);
@@ -1129,6 +1139,9 @@ void drawLowResUI() {
 }
 
 void mousePressed() {
+  // Don't process mouse during startup screen
+  if (showStartupScreen) return;
+  
   // If selecting zoom, record start position
   if (isSelectingZoom) {
     zoomSelectionStart.set(mouseX / displayScale, mouseY / displayScale);
@@ -1163,6 +1176,9 @@ void mousePressed() {
 }
 
 void mouseReleased() {
+  // Don't process mouse during startup screen
+  if (showStartupScreen) return;
+  
   // If we were selecting zoom, apply the zoom
   if (isSelectingZoom && zoomSelectionStart.x >= 0) {
     // Calculate zoom from selection
@@ -1225,6 +1241,9 @@ void mouseDragged() {
 }
 
 void mouseWheel(MouseEvent event) {
+  // Don't process mouse during startup screen
+  if (showStartupScreen) return;
+  
   // Disable scrolling when zoomed
   if (isZoomed) {
     return;
@@ -1244,6 +1263,15 @@ void keyReleased() {
 }
 
 void keyPressed() {
+  // Handle startup screen
+  if (showStartupScreen) {
+    if (key == ENTER || key == RETURN) {
+      showStartupScreen = false;
+      println("Starting paint application...");
+    }
+    return;  // Don't process other keys during startup
+  }
+  
   // Handle ESC key for clean exit
   if (key == ESC) {
     key = 0;  // Prevent default ESC behavior
@@ -1581,6 +1609,94 @@ class MidiReceiver implements Receiver {
   public void close() {
     // Cleanup if needed
   }
+}
+
+// Draw startup screen
+void drawStartupScreen() {
+  // Update animation time
+  startupAnimTime += 0.016;  // ~60fps
+  
+  // Clear to white background
+  background(255);
+  
+  // Calculate center position
+  float centerX = width / 2;
+  float centerY = height / 2;
+  
+  // Draw smile.png with pulsing animation and chroma key
+  if (stampImages != null && stampImages.length > 0 && stampImages[0] != null) {
+    PImage smileImg = stampImages[0];
+    
+    // Pulsing scale effect
+    float scale = 3.0 + sin(startupAnimTime * 3) * 0.3;
+    float imgSize = 128 * scale;
+    
+    // Create chroma keyed version for display
+    PImage chromaKeyed = createImage(smileImg.width, smileImg.height, ARGB);
+    chromaKeyed.loadPixels();
+    smileImg.loadPixels();
+    
+    // Apply chroma key for blue (0, 0, 255)
+    for (int i = 0; i < smileImg.pixels.length; i++) {
+      color c = smileImg.pixels[i];
+      float r = red(c);
+      float g = green(c);
+      float b = blue(c);
+      
+      // Check if pixel is blue (with some tolerance)
+      float blueDiff = abs(b - 255) + abs(r - 0) + abs(g - 0);
+      
+      if (blueDiff < 30) {  // Blue pixel - make transparent
+        chromaKeyed.pixels[i] = color(0, 0, 0, 0);
+      } else {
+        // Non-blue pixel - keep it
+        chromaKeyed.pixels[i] = c;
+      }
+    }
+    chromaKeyed.updatePixels();
+    
+    // Draw the chroma keyed image
+    imageMode(CENTER);
+    image(chromaKeyed, centerX, centerY - 50, imgSize, imgSize);
+    imageMode(CORNER);
+  }
+  
+  // Draw title text with rainbow effect
+  textAlign(CENTER, CENTER);
+  textSize(48);
+  
+  // Rainbow color animation
+  float rainbowTime = startupAnimTime * 2;
+  fill(
+    (sin(rainbowTime) * 0.5 + 0.5) * 255,
+    (sin(rainbowTime + 2.094) * 0.5 + 0.5) * 255,
+    (sin(rainbowTime + 4.189) * 0.5 + 0.5) * 255
+  );
+  text("GLSL PAINT", centerX, centerY + 120);
+  
+  // Draw subtitle
+  textSize(24);
+  fill(80);  // Darker gray for white background
+  text("Thermal Printer Edition", centerX, centerY + 160);
+  
+  // Draw "Press ENTER to start" with blinking effect
+  textSize(20);
+  float blinkAlpha = (sin(startupAnimTime * 4) * 0.5 + 0.5) * 255;
+  fill(0, blinkAlpha);  // Black text for white background
+  text("Press ENTER to start", centerX, centerY + 220);
+  
+  // Draw loaded image info
+  textSize(16);
+  fill(100);  // Medium gray
+  text("Loaded: smile.png", centerX, centerY + 260);
+  
+  // Draw version/info at bottom
+  textAlign(CENTER, BOTTOM);
+  textSize(12);
+  fill(120);  // Darker for visibility on white
+  text("Canvas: " + CANVAS_WIDTH + "px | MIDI: " + (midiConnected ? "Connected" : "Not Connected"), centerX, height - 10);
+  
+  textAlign(LEFT, TOP);  // Reset alignment
 }
 
 // Helper function to draw image with blue chroma key
