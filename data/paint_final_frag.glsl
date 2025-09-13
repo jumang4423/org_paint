@@ -8,6 +8,8 @@ uniform vec2 u_prevMouse;
 uniform float u_brushSize;
 uniform float u_isErasing;
 uniform vec3 u_paintColor;
+uniform float u_isRainbow;
+uniform float u_time;
 
 varying vec4 vertTexCoord;
 
@@ -43,7 +45,21 @@ void main() {
     float mask = dist <= brushRadius ? 1.0 : 0.0;  // Hard cutoff, no smoothstep
     
     // Paint or erase
-    vec4 paintColor = u_isErasing > 0.5 ? vec4(1.0, 1.0, 1.0, 1.0) : vec4(u_paintColor, 1.0);
+    vec4 paintColor;
+    if (u_isErasing > 0.5) {
+        paintColor = vec4(1.0, 1.0, 1.0, 1.0);  // White for erasing
+    } else if (u_isRainbow > 0.5) {
+        // Rainbow color based on position and time
+        float rainbow = (pixelPos.x + pixelPos.y + u_time * 500.0) * 0.02;
+        vec3 rainbowColor = vec3(
+            sin(rainbow) * 0.5 + 0.5,
+            sin(rainbow + 2.094) * 0.5 + 0.5,  // 2π/3
+            sin(rainbow + 4.189) * 0.5 + 0.5   // 4π/3
+        );
+        paintColor = vec4(rainbowColor, 1.0);
+    } else {
+        paintColor = vec4(u_paintColor, 1.0);
+    }
     
     // Apply brush
     gl_FragColor = mix(prevColor, paintColor, mask);

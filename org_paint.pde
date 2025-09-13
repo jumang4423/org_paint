@@ -26,10 +26,16 @@ boolean pendingSave = false;  // Flag for deferred save operation
 boolean pendingPrint = false;  // Flag for print after save
 boolean showDebugInfo = false;  // Toggle debug info with Tab key
 
+// Pen modes
+int PEN_MODE_DEFAULT = 0;
+int PEN_MODE_REMOVE = 1;
+int currentPenMode = PEN_MODE_DEFAULT;
+String[] penModeNames = {"DEFAULT", "REMOVE"};
+
 // Color palette
-int currentColorIndex = 0;  // 0=black, 1=green, 2=yellow, 3=lightgray
-color[] palette = new color[4];
-String[] colorNames = {"BLACK", "GREEN", "YELLOW", "LIGHT GRAY"};
+int currentColorIndex = 0;  // 0=black, 1=green, 2=yellow, 3=lightgray, 4=rainbow
+color[] palette = new color[5];
+String[] colorNames = {"BLACK", "GREEN", "YELLOW", "LIGHT GRAY", "RAINBOW"};
 
 // Modal system
 String modalMessage = "";
@@ -39,6 +45,7 @@ boolean modalVisible = false;
 boolean modalPersistent = false;  // Keep modal visible until manually cleared
 boolean modalShowColorPalette = false;  // Show color palette in modal
 boolean modalShowBrush = false;  // Show brush circle in modal
+boolean modalShowPenMode = false;  // Show pen mode icons in modal
 
 // Zoom state
 boolean isSelectingZoom = false;  // Currently selecting zoom area
@@ -73,6 +80,7 @@ MidiDevice midiDevice = null;
 boolean midiConnected = false;
 volatile float pendingBrushSize = -1;  // Thread-safe variable for MIDI updates
 volatile int pendingColorIndex = -1;  // Thread-safe variable for color selection
+volatile int pendingPenMode = -1;  // Thread-safe variable for pen mode selection
 int lastMidiCheck = 0;
 float lastKnownBrushSize = 2.0;  // Track last brush size to detect changes
 
@@ -110,6 +118,7 @@ void setup() {
   palette[1] = color(0, 255, 0);     // Green  
   palette[2] = color(200, 200, 0);   // Darker Yellow (better for printing)
   palette[3] = color(192, 192, 192); // Light gray
+  palette[4] = color(255, 0, 255);   // Rainbow (will be handled specially in shader)
   
   // Load final GLSL paint shader
   paintShader = loadShader("paint_final_frag.glsl");
@@ -128,8 +137,8 @@ void setup() {
   println("On-demand GPU rendering enabled");
   println("Max chunks: " + MAX_CHUNKS);
   println("Controls:");
-  println("  - Left click: Draw");
-  println("  - Right click: Erase");
+  println("  - Left click: Draw/Remove (based on current pen mode)");
+  println("  - Right click: No action");
   println("  - Mouse wheel/Arrow keys: Scroll");
   println("  - P: Save and Print to thermal printer");
   println("  - Space: Toggle zoom mode (select area with mouse, Space again to exit)");
@@ -137,8 +146,9 @@ void setup() {
   println("  - Cmd+Z: Undo last action");
   println("  - Cmd+Shift+Z: Redo last action");
   if (midiConnected) {
-    println("  - MIDI CC1: Brush size (1-8px)");
-    println("  - MIDI CC2: Color selection (Black, Green, Yellow, Light Gray)");
+    println("  - MIDI CC1: Pen mode (Default, Remove)");
+    println("  - MIDI CC2: Color selection (Black, Green, Yellow, Light Gray, Rainbow)");
+    println("  - MIDI CC3: Brush size (1-8px)");
   }
 }
 
@@ -314,6 +324,8 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
   // Pass color to shader
   color currentColor = palette[currentColorIndex];
   paintShader.set("u_paintColor", red(currentColor)/255.0, green(currentColor)/255.0, blue(currentColor)/255.0);
+  paintShader.set("u_isRainbow", currentColorIndex == 4 ? 1.0 : 0.0);
+  paintShader.set("u_time", millis() / 1000.0);
   
   // Apply shader to buffer
   bufferTexture.beginDraw();
@@ -356,6 +368,12 @@ void draw() {
     currentColorIndex = pendingColorIndex;
     pendingColorIndex = -1;
     showColorPaletteModal();
+  }
+  
+  if (pendingPenMode >= 0) {
+    currentPenMode = pendingPenMode;
+    pendingPenMode = -1;
+    showPenModeModal();
   }
   
   // Calculate max scroll based on actual content
@@ -575,6 +593,7 @@ void showModal(String message, int duration) {
   modalPersistent = false;
   modalShowColorPalette = false;
   modalShowBrush = false;  // Reset brush modal flag
+  modalShowPenMode = false;  // Reset pen mode modal flag
 }
 
 // Show color palette modal
@@ -586,6 +605,7 @@ void showColorPaletteModal() {
   modalPersistent = false;
   modalShowColorPalette = true;
   modalShowBrush = false;
+  modalShowPenMode = false;
 }
 
 // Show brush size modal
@@ -597,6 +617,19 @@ void showBrushModal() {
   modalPersistent = false;
   modalShowColorPalette = false;
   modalShowBrush = true;
+  modalShowPenMode = false;
+}
+
+// Show pen mode modal
+void showPenModeModal() {
+  modalMessage = "";
+  modalStartTime = millis();
+  modalDuration = 1500;
+  modalVisible = true;
+  modalPersistent = false;
+  modalShowColorPalette = false;
+  modalShowBrush = false;
+  modalShowPenMode = true;
 }
 
 // Show a modal with default 1 second duration
@@ -611,6 +644,7 @@ void showPersistentModal(String message) {
   modalPersistent = true;
   modalShowColorPalette = false;  // Reset other modal types
   modalShowBrush = false;  // Reset other modal types
+  modalShowPenMode = false;  // Reset other modal types
 }
 
 // Clear persistent modal
@@ -646,40 +680,52 @@ void drawModal() {
     
     if (modalShowColorPalette) {
       // For color palette, we need wider box for color squares
-      boxWidth = 150;  // Fixed width for color palette
+      boxWidth = 180;  // Fixed width for 5 colors
       boxHeight = 30;  // Height for color boxes
     } else if (modalShowBrush) {
       // For brush display
       boxWidth = 80;  // Smaller width for brush
       boxHeight = 24;  // Compact height
+    } else if (modalShowPenMode) {
+      // For pen mode icons
+      boxWidth = 70;  // Width for 2 pen mode icons
+      boxHeight = 30;  // Height for icons
     } else {
       float textWidth = lowResCanvas.textWidth(modalMessage);
       boxWidth = textWidth + padding * 2;
       boxHeight = 20;  // Normal height for text
     }
     
-    // Determine which quadrant the mouse is in (in low-res coordinates)
-    float lowResMouseX = mouseX / displayScale;
-    float lowResMouseY = mouseY / displayScale;
-    boolean mouseInRightHalf = lowResMouseX > CANVAS_WIDTH / 2;
-    boolean mouseInBottomHalf = lowResMouseY > SCREEN_HEIGHT / 2;
-    
-    // Calculate modal position (opposite quadrant from mouse)
+    // Calculate modal position
     float modalX, modalY;
-    if (mouseInRightHalf) {
-      // Mouse is on right, show modal on left
-      modalX = 4;
-    } else {
-      // Mouse is on left, show modal on right
-      modalX = CANVAS_WIDTH - boxWidth - 4;
-    }
     
-    if (mouseInBottomHalf) {
-      // Mouse is on bottom, show modal on top
-      modalY = 4;
+    // Center position for color palette and pen mode picker
+    if (modalShowColorPalette || modalShowPenMode) {
+      // Center the modal
+      modalX = (CANVAS_WIDTH - boxWidth) / 2;
+      modalY = (SCREEN_HEIGHT - boxHeight) / 2;
     } else {
-      // Mouse is on top, show modal on bottom
-      modalY = SCREEN_HEIGHT - boxHeight - 4;
+      // Smart positioning for other modals (opposite quadrant from mouse)
+      float lowResMouseX = mouseX / displayScale;
+      float lowResMouseY = mouseY / displayScale;
+      boolean mouseInRightHalf = lowResMouseX > CANVAS_WIDTH / 2;
+      boolean mouseInBottomHalf = lowResMouseY > SCREEN_HEIGHT / 2;
+      
+      if (mouseInRightHalf) {
+        // Mouse is on right, show modal on left
+        modalX = 4;
+      } else {
+        // Mouse is on left, show modal on right
+        modalX = CANVAS_WIDTH - boxWidth - 4;
+      }
+      
+      if (mouseInBottomHalf) {
+        // Mouse is on bottom, show modal on top
+        modalY = 4;
+      } else {
+        // Mouse is on top, show modal on bottom
+        modalY = SCREEN_HEIGHT - boxHeight - 4;
+      }
     }
     
     // Happy bright colors for rainbow border
@@ -724,14 +770,26 @@ void drawModal() {
       // Draw color palette boxes
       int boxSize = 20;
       int boxSpacing = 30;
-      int startX = (int)(modalX + (boxWidth - (4 * boxSpacing - (boxSpacing - boxSize))) / 2);
+      int startX = (int)(modalX + (boxWidth - (5 * boxSpacing - (boxSpacing - boxSize))) / 2);
       
-      for (int i = 0; i < 4; i++) {
+      for (int i = 0; i < 5; i++) {
         int boxX = startX + i * boxSpacing;
         int boxY = (int)(modalY + boxHeight/2 - boxSize/2);
         
         // Draw color box with border and rounded corners
-        lowResCanvas.fill(red(palette[i]), green(palette[i]), blue(palette[i]), opacity);
+        if (i == 4) {
+          // Rainbow - draw gradient or special pattern
+          // Use animated rainbow colors
+          float rainbowTime = millis() * 0.01;
+          color rainbowColor = color(
+            (sin(rainbowTime) * 0.5 + 0.5) * 255,
+            (sin(rainbowTime + 2.094) * 0.5 + 0.5) * 255,
+            (sin(rainbowTime + 4.189) * 0.5 + 0.5) * 255
+          );
+          lowResCanvas.fill(red(rainbowColor), green(rainbowColor), blue(rainbowColor), opacity);
+        } else {
+          lowResCanvas.fill(red(palette[i]), green(palette[i]), blue(palette[i]), opacity);
+        }
         
         // Draw selection highlight with rainbow border
         if (i == currentColorIndex) {
@@ -762,6 +820,55 @@ void drawModal() {
       lowResCanvas.textSize(10);
       lowResCanvas.noStroke();
       lowResCanvas.text(": " + (int)brushSize + "px", brushX + brushSize/2 + 8, brushY - 1);  // Adjusted Y position
+    } else if (modalShowPenMode) {
+      // Draw pen mode icons
+      int iconSize = 20;
+      int iconSpacing = 30;
+      int startX = (int)(modalX + (boxWidth - (2 * iconSpacing - (iconSpacing - iconSize))) / 2);
+      
+      for (int i = 0; i < 2; i++) {
+        int iconX = startX + i * iconSpacing;
+        int iconY = (int)(modalY + boxHeight/2 - iconSize/2);
+        
+        // Draw icon background with rounded corners
+        if (i == currentPenMode) {
+          // Selected mode - use rainbow border color
+          lowResCanvas.fill(255, opacity);
+          lowResCanvas.stroke(red(borderColor), green(borderColor), blue(borderColor), opacity);
+          lowResCanvas.strokeWeight(2);
+        } else {
+          // Non-selected mode
+          lowResCanvas.fill(240, opacity);
+          lowResCanvas.stroke(128, opacity);
+          lowResCanvas.strokeWeight(1);
+        }
+        
+        lowResCanvas.rect(iconX, iconY, iconSize, iconSize, 6, 6, 6, 6);
+        
+        // Draw icons
+        lowResCanvas.noStroke();
+        if (i == PEN_MODE_DEFAULT) {
+          // Draw pen icon (simple pencil shape)
+          lowResCanvas.fill(0, opacity);
+          // Pencil tip (triangle)
+          lowResCanvas.triangle(
+            iconX + iconSize/2, iconY + 3,
+            iconX + iconSize/2 - 3, iconY + 8,
+            iconX + iconSize/2 + 3, iconY + 8
+          );
+          // Pencil body (rectangle)
+          lowResCanvas.rect(iconX + iconSize/2 - 2, iconY + 8, 4, 9);
+        } else if (i == PEN_MODE_REMOVE) {
+          // Draw eraser icon (rectangle with lines)
+          lowResCanvas.fill(255, 192, 203, opacity);  // Pink eraser color
+          lowResCanvas.rect(iconX + 4, iconY + 6, 12, 8, 2, 2, 2, 2);
+          // Add eraser detail lines
+          lowResCanvas.stroke(180, 150, 160, opacity);
+          lowResCanvas.strokeWeight(1);
+          lowResCanvas.line(iconX + 6, iconY + 8, iconX + 14, iconY + 8);
+          lowResCanvas.line(iconX + 6, iconY + 12, iconX + 14, iconY + 12);
+        }
+      }
     } else {
       // Draw text
       lowResCanvas.fill(0, opacity);  // Black text on white background
@@ -779,8 +886,21 @@ void drawLowResUI() {
   float lowResMouseX = mouseX / displayScale;
   float lowResMouseY = mouseY / displayScale;
   
-  // Use current selected color for brush preview
-  color brushColor = palette[currentColorIndex];
+  // Use current selected color for brush preview, or white for remove mode
+  color brushColor;
+  if (currentPenMode == PEN_MODE_REMOVE) {
+    brushColor = color(255, 0, 0);  // Red for remove mode
+  } else if (currentColorIndex == 4) {
+    // Rainbow - animated preview color
+    float brushTime = millis() * 0.01;
+    brushColor = color(
+      (sin(brushTime) * 0.5 + 0.5) * 255,
+      (sin(brushTime + 2.094) * 0.5 + 0.5) * 255,
+      (sin(brushTime + 4.189) * 0.5 + 0.5) * 255
+    );
+  } else {
+    brushColor = palette[currentColorIndex];
+  }
   
   // Transform brush position if zoomed
   if (isZoomed && !isSelectingZoom) {
@@ -818,7 +938,7 @@ void drawLowResUI() {
     } else if (isZoomed) {
       lowResCanvas.text("ZOOMED: " + nf(zoomScale, 1, 1) + "x (SPACE to exit)", 2, 2);
     } else {
-      lowResCanvas.text("MODE: " + (isErasing ? "ERASE" : "DRAW"), 2, 2);
+      lowResCanvas.text("PEN: " + penModeNames[currentPenMode], 2, 2);
     }
     
     lowResCanvas.text("BRUSH: " + (int)brushSize + "px", 2, 10);
@@ -853,12 +973,11 @@ void mousePressed() {
     // Mark that we need to save state before first paint
     captureUndoState = true;
     isDrawing = true;
-    isErasing = false;
+    // Set erasing based on pen mode
+    isErasing = (currentPenMode == PEN_MODE_REMOVE);
   } else if (mouseButton == RIGHT) {
-    // Mark that we need to save state before first paint
-    captureUndoState = true;
-    isDrawing = true;
-    isErasing = true;
+    // Right click does nothing now
+    return;
   }
   
   // Adjust for scale and zoom
@@ -1213,8 +1332,34 @@ class MidiReceiver implements Receiver {
         int ccNumber = sm.getData1();
         int value = sm.getData2();
         
-        // Handle CC1 for brush size
+        // Handle CC1 for pen mode selection
         if (ccNumber == 1) {
+          // Map MIDI value (0-127) to pen mode (0-1)
+          // 0-63: Default pen, 64-127: Remove pen
+          int newPenMode = value < 64 ? PEN_MODE_DEFAULT : PEN_MODE_REMOVE;
+          
+          // Set pending pen mode (thread-safe)
+          pendingPenMode = newPenMode;
+          
+          // Visual feedback
+          println("MIDI CC1: value=" + value + " → Pen mode = " + penModeNames[newPenMode]);
+        }
+        
+        // Handle CC2 for color selection
+        if (ccNumber == 2) {
+          // Map MIDI value (0-127) to color index (0-4)
+          // 0-25: Black, 26-51: Green, 52-77: Yellow, 78-103: Light Gray, 104-127: Rainbow
+          int newColorIndex = constrain(value * 5 / 128, 0, 4);
+          
+          // Set pending color index (thread-safe)
+          pendingColorIndex = newColorIndex;
+          
+          // Visual feedback
+          println("MIDI CC2: value=" + value + " → Color = " + colorNames[newColorIndex]);
+        }
+        
+        // Handle CC3 for brush size
+        if (ccNumber == 3) {
           // Map MIDI value (0-127) to brush size (1-8px)
           float newBrushSize = map(value, 0, 127, 1, 8);
           newBrushSize = constrain(newBrushSize, 1, 8);
@@ -1223,20 +1368,7 @@ class MidiReceiver implements Receiver {
           pendingBrushSize = newBrushSize;
           
           // Visual feedback
-          println("MIDI CC1: value=" + value + " → Brush size = " + (int)newBrushSize + "px");
-        }
-        
-        // Handle CC2 for color selection
-        if (ccNumber == 2) {
-          // Map MIDI value (0-127) to color index (0-3)
-          // 0-31: Black, 32-63: Green, 64-95: Yellow, 96-127: Light Gray
-          int newColorIndex = constrain(value / 32, 0, 3);
-          
-          // Set pending color index (thread-safe)
-          pendingColorIndex = newColorIndex;
-          
-          // Visual feedback
-          println("MIDI CC2: value=" + value + " → Color = " + colorNames[newColorIndex]);
+          println("MIDI CC3: value=" + value + " → Brush size = " + (int)newBrushSize + "px");
         }
       }
     }
