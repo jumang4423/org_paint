@@ -3,6 +3,7 @@ precision mediump float;
 #endif
 
 uniform sampler2D texture;
+uniform sampler2D u_stampImage;
 uniform vec2 u_mouse;
 uniform vec2 u_prevMouse;
 uniform float u_brushSize;
@@ -10,6 +11,8 @@ uniform float u_isErasing;
 uniform vec3 u_paintColor;
 uniform float u_isRainbow;
 uniform float u_time;
+uniform float u_isImageMode;
+uniform float u_imageSize;
 
 varying vec4 vertTexCoord;
 
@@ -30,37 +33,70 @@ void main() {
     // Sample previous frame
     vec4 prevColor = texture2D(texture, uv);
     
-    // Calculate distance to brush stroke
-    float dist;
-    if (u_prevMouse.x < 0.0) {
-        // Single point
-        dist = distance(pixelPos, u_mouse);
+    // Check if we're in image stamp mode
+    if (u_isImageMode > 0.5) {
+        // Image stamp mode - only stamp at mouse position, no line interpolation
+        vec2 imageCenter = u_mouse;
+        float halfSize = u_imageSize * 0.5;
+        
+        // Check if pixel is within image bounds
+        if (pixelPos.x >= imageCenter.x - halfSize && 
+            pixelPos.x <= imageCenter.x + halfSize &&
+            pixelPos.y >= imageCenter.y - halfSize && 
+            pixelPos.y <= imageCenter.y + halfSize) {
+            
+            // Calculate UV coordinates for the stamp image
+            vec2 stampUV = (pixelPos - (imageCenter - vec2(halfSize))) / u_imageSize;
+            
+            // Sample the stamp image
+            vec4 stampColor = texture2D(u_stampImage, stampUV);
+            
+            // Apply chroma key for blue (0, 0, 255)
+            float blueDiff = abs(stampColor.b - 1.0) + abs(stampColor.r) + abs(stampColor.g);
+            
+            // If not blue (chroma key), apply the stamp
+            if (blueDiff > 0.1) {
+                gl_FragColor = stampColor;
+            } else {
+                gl_FragColor = prevColor;
+            }
+        } else {
+            gl_FragColor = prevColor;
+        }
     } else {
-        // Line segment for smooth strokes
-        dist = sdSegment(pixelPos, u_prevMouse, u_mouse);
+        // Regular brush mode
+        // Calculate distance to brush stroke
+        float dist;
+        if (u_prevMouse.x < 0.0) {
+            // Single point
+            dist = distance(pixelPos, u_mouse);
+        } else {
+            // Line segment for smooth strokes
+            dist = sdSegment(pixelPos, u_prevMouse, u_mouse);
+        }
+        
+        // Create hard-edged brush mask (no antialiasing)
+        float brushRadius = u_brushSize * 0.5;
+        float mask = dist <= brushRadius ? 1.0 : 0.0;  // Hard cutoff, no smoothstep
+        
+        // Paint or erase
+        vec4 paintColor;
+        if (u_isErasing > 0.5) {
+            paintColor = vec4(1.0, 1.0, 1.0, 1.0);  // White for erasing
+        } else if (u_isRainbow > 0.5) {
+            // Rainbow color based on position and time
+            float rainbow = (pixelPos.x + pixelPos.y + u_time * 500.0) * 0.02;
+            vec3 rainbowColor = vec3(
+                sin(rainbow) * 0.5 + 0.5,
+                sin(rainbow + 2.094) * 0.5 + 0.5,  // 2π/3
+                sin(rainbow + 4.189) * 0.5 + 0.5   // 4π/3
+            );
+            paintColor = vec4(rainbowColor, 1.0);
+        } else {
+            paintColor = vec4(u_paintColor, 1.0);
+        }
+        
+        // Apply brush
+        gl_FragColor = mix(prevColor, paintColor, mask);
     }
-    
-    // Create hard-edged brush mask (no antialiasing)
-    float brushRadius = u_brushSize * 0.5;
-    float mask = dist <= brushRadius ? 1.0 : 0.0;  // Hard cutoff, no smoothstep
-    
-    // Paint or erase
-    vec4 paintColor;
-    if (u_isErasing > 0.5) {
-        paintColor = vec4(1.0, 1.0, 1.0, 1.0);  // White for erasing
-    } else if (u_isRainbow > 0.5) {
-        // Rainbow color based on position and time
-        float rainbow = (pixelPos.x + pixelPos.y + u_time * 500.0) * 0.02;
-        vec3 rainbowColor = vec3(
-            sin(rainbow) * 0.5 + 0.5,
-            sin(rainbow + 2.094) * 0.5 + 0.5,  // 2π/3
-            sin(rainbow + 4.189) * 0.5 + 0.5   // 4π/3
-        );
-        paintColor = vec4(rainbowColor, 1.0);
-    } else {
-        paintColor = vec4(u_paintColor, 1.0);
-    }
-    
-    // Apply brush
-    gl_FragColor = mix(prevColor, paintColor, mask);
 }

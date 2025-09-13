@@ -29,8 +29,9 @@ boolean showDebugInfo = false;  // Toggle debug info with Tab key
 // Pen modes
 int PEN_MODE_DEFAULT = 0;
 int PEN_MODE_REMOVE = 1;
+int PEN_MODE_IMAGE = 2;
 int currentPenMode = PEN_MODE_DEFAULT;
-String[] penModeNames = {"DEFAULT", "REMOVE"};
+String[] penModeNames = {"DEFAULT", "REMOVE", "IMAGE"};
 
 // Color palette
 int currentColorIndex = 0;  // 0=black, 1=green, 2=yellow, 3=lightgray, 4=rainbow
@@ -46,6 +47,7 @@ boolean modalPersistent = false;  // Keep modal visible until manually cleared
 boolean modalShowColorPalette = false;  // Show color palette in modal
 boolean modalShowBrush = false;  // Show brush circle in modal
 boolean modalShowPenMode = false;  // Show pen mode icons in modal
+boolean modalShowImagePreview = false;  // Show image preview in modal
 
 // Zoom state
 boolean isSelectingZoom = false;  // Currently selecting zoom area
@@ -81,8 +83,17 @@ boolean midiConnected = false;
 volatile float pendingBrushSize = -1;  // Thread-safe variable for MIDI updates
 volatile int pendingColorIndex = -1;  // Thread-safe variable for color selection
 volatile int pendingPenMode = -1;  // Thread-safe variable for pen mode selection
+volatile int pendingImageIndex = -1;  // Thread-safe variable for image selection
+volatile float pendingImageSize = -1;  // Thread-safe variable for image size
 int lastMidiCheck = 0;
 float lastKnownBrushSize = 2.0;  // Track last brush size to detect changes
+
+// Image pen variables
+PImage[] stampImages;
+String[] stampImageNames = {"smile.png"};
+int currentImageIndex = 0;
+float imageStampSize = 32.0;  // Default 32px
+boolean modalShowImageSelect = false;  // Show image selection in modal
 
 void setup() {
   fullScreen(P3D);  // Fullscreen
@@ -136,8 +147,17 @@ void setup() {
   println("Canvas width: " + CANVAS_WIDTH + "px");
   println("On-demand GPU rendering enabled");
   println("Max chunks: " + MAX_CHUNKS);
+  // Load stamp images
+  stampImages = new PImage[stampImageNames.length];
+  for (int i = 0; i < stampImageNames.length; i++) {
+    stampImages[i] = loadImage(stampImageNames[i]);
+    if (stampImages[i] != null) {
+      println("Loaded stamp image: " + stampImageNames[i] + " (" + stampImages[i].width + "x" + stampImages[i].height + ")");
+    }
+  }
+  
   println("Controls:");
-  println("  - Left click: Draw/Remove (based on current pen mode)");
+  println("  - Left click: Draw/Remove/Stamp (based on current pen mode)");
   println("  - Right click: No action");
   println("  - Mouse wheel/Arrow keys: Scroll");
   println("  - P: Save and Print to thermal printer");
@@ -146,9 +166,9 @@ void setup() {
   println("  - Cmd+Z: Undo last action");
   println("  - Cmd+Shift+Z: Redo last action");
   if (midiConnected) {
-    println("  - MIDI CC1: Pen mode (Default, Remove)");
-    println("  - MIDI CC2: Color selection (Black, Green, Yellow, Light Gray, Rainbow)");
-    println("  - MIDI CC3: Brush size (1-8px)");
+    println("  - MIDI CC1: Pen mode (Default, Remove, Image)");
+    println("  - MIDI CC2: Color/Image selection");
+    println("  - MIDI CC3: Brush/Image size (1-8px for brush, 10-128px for image)");
   }
 }
 
@@ -304,9 +324,9 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
   float localMouseY = globalMouseY - chunkY;
   float localPrevY = globalPrevY - chunkY;
   
-  // Check if brush affects this chunk
-  float brushRadius = brushSize * 0.5;
-  if (localMouseY < -brushRadius - 10 || localMouseY > CHUNK_HEIGHT + brushRadius + 10) {
+  // Check if brush/image affects this chunk
+  float effectRadius = (currentPenMode == PEN_MODE_IMAGE) ? imageStampSize * 0.5 : brushSize * 0.5;
+  if (localMouseY < -effectRadius - 10 || localMouseY > CHUNK_HEIGHT + effectRadius + 10) {
     return;
   }
   
@@ -320,6 +340,16 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
                                  globalPrevX < 0 ? -1.0 : localPrevY);
   paintShader.set("u_brushSize", brushSize);
   paintShader.set("u_isErasing", isErasing ? 1.0 : 0.0);
+  
+  // Set image mode uniforms
+  paintShader.set("u_isImageMode", currentPenMode == PEN_MODE_IMAGE ? 1.0 : 0.0);
+  paintShader.set("u_imageSize", imageStampSize);
+  
+  // Pass stamp image if in image mode
+  if (currentPenMode == PEN_MODE_IMAGE && stampImages != null && 
+      currentImageIndex < stampImages.length && stampImages[currentImageIndex] != null) {
+    paintShader.set("u_stampImage", stampImages[currentImageIndex]);
+  }
   
   // Pass color to shader
   color currentColor = palette[currentColorIndex];
@@ -364,10 +394,22 @@ void draw() {
     showBrushModal();  // Show brush modal with circle
   }
   
+  if (pendingImageSize > 0) {
+    imageStampSize = pendingImageSize;
+    pendingImageSize = -1;
+    showImageSizeModal();  // Show image size modal
+  }
+  
   if (pendingColorIndex >= 0) {
     currentColorIndex = pendingColorIndex;
     pendingColorIndex = -1;
     showColorPaletteModal();
+  }
+  
+  if (pendingImageIndex >= 0) {
+    currentImageIndex = pendingImageIndex;
+    pendingImageIndex = -1;
+    showImageSelectModal();
   }
   
   if (pendingPenMode >= 0) {
@@ -402,9 +444,10 @@ void draw() {
       globalMouseY = mouseY / displayScale + scrollY;
     }
     
-    // Find affected chunks
-    int startChunk = (int)((globalMouseY - brushSize/2) / CHUNK_HEIGHT) * CHUNK_HEIGHT;
-    int endChunk = (int)((globalMouseY + brushSize/2) / CHUNK_HEIGHT) * CHUNK_HEIGHT;
+    // Find affected chunks (use image size for image mode)
+    float effectRadius = (currentPenMode == PEN_MODE_IMAGE) ? imageStampSize/2 : brushSize/2;
+    int startChunk = (int)((globalMouseY - effectRadius) / CHUNK_HEIGHT) * CHUNK_HEIGHT;
+    int endChunk = (int)((globalMouseY + effectRadius) / CHUNK_HEIGHT) * CHUNK_HEIGHT;
     
     for (int chunkY = startChunk; chunkY <= endChunk; chunkY += CHUNK_HEIGHT) {
       int idx = getChunkIndex(chunkY);
@@ -594,6 +637,7 @@ void showModal(String message, int duration) {
   modalShowColorPalette = false;
   modalShowBrush = false;  // Reset brush modal flag
   modalShowPenMode = false;  // Reset pen mode modal flag
+  modalShowImagePreview = false;  // Reset image preview flag
 }
 
 // Show color palette modal
@@ -606,6 +650,7 @@ void showColorPaletteModal() {
   modalShowColorPalette = true;
   modalShowBrush = false;
   modalShowPenMode = false;
+  modalShowImagePreview = false;
 }
 
 // Show brush size modal
@@ -618,6 +663,7 @@ void showBrushModal() {
   modalShowColorPalette = false;
   modalShowBrush = true;
   modalShowPenMode = false;
+  modalShowImagePreview = false;
 }
 
 // Show pen mode modal
@@ -630,6 +676,33 @@ void showPenModeModal() {
   modalShowColorPalette = false;
   modalShowBrush = false;
   modalShowPenMode = true;
+  modalShowImagePreview = false;
+}
+
+// Show image selection modal with preview
+void showImageSelectModal() {
+  modalMessage = "";
+  modalStartTime = millis();
+  modalDuration = 1500;
+  modalVisible = true;
+  modalPersistent = false;
+  modalShowColorPalette = false;
+  modalShowBrush = false;
+  modalShowPenMode = false;
+  modalShowImagePreview = true;
+}
+
+// Show image size modal
+void showImageSizeModal() {
+  modalMessage = "IMAGE SIZE: " + (int)imageStampSize + "px";
+  modalStartTime = millis();
+  modalDuration = 1000;
+  modalVisible = true;
+  modalPersistent = false;
+  modalShowColorPalette = false;
+  modalShowBrush = false;
+  modalShowPenMode = false;
+  modalShowImagePreview = false;
 }
 
 // Show a modal with default 1 second duration
@@ -645,6 +718,7 @@ void showPersistentModal(String message) {
   modalShowColorPalette = false;  // Reset other modal types
   modalShowBrush = false;  // Reset other modal types
   modalShowPenMode = false;  // Reset other modal types
+  modalShowImagePreview = false;  // Reset other modal types
 }
 
 // Clear persistent modal
@@ -688,8 +762,12 @@ void drawModal() {
       boxHeight = 24;  // Compact height
     } else if (modalShowPenMode) {
       // For pen mode icons
-      boxWidth = 70;  // Width for 2 pen mode icons
+      boxWidth = 100;  // Width for 3 pen mode icons
       boxHeight = 30;  // Height for icons
+    } else if (modalShowImagePreview) {
+      // For image preview
+      boxWidth = 80;  // Fixed size for image preview
+      boxHeight = 80;  // Square for image
     } else {
       float textWidth = lowResCanvas.textWidth(modalMessage);
       boxWidth = textWidth + padding * 2;
@@ -699,8 +777,8 @@ void drawModal() {
     // Calculate modal position
     float modalX, modalY;
     
-    // Center position for color palette and pen mode picker
-    if (modalShowColorPalette || modalShowPenMode) {
+    // Center position for color palette, pen mode picker, and image preview
+    if (modalShowColorPalette || modalShowPenMode || modalShowImagePreview) {
       // Center the modal
       modalX = (CANVAS_WIDTH - boxWidth) / 2;
       modalY = (SCREEN_HEIGHT - boxHeight) / 2;
@@ -767,41 +845,60 @@ void drawModal() {
     
     // Draw content
     if (modalShowColorPalette) {
-      // Draw color palette boxes
-      int boxSize = 20;
-      int boxSpacing = 30;
-      int startX = (int)(modalX + (boxWidth - (5 * boxSpacing - (boxSpacing - boxSize))) / 2);
-      
-      for (int i = 0; i < 5; i++) {
-        int boxX = startX + i * boxSpacing;
-        int boxY = (int)(modalY + boxHeight/2 - boxSize/2);
+      // Check if we're in remove mode - show red X instead
+      if (currentPenMode == PEN_MODE_REMOVE) {
+        // Draw a big red X to indicate colors are not available
+        lowResCanvas.stroke(255, 0, 0, opacity);  // Red color
+        lowResCanvas.strokeWeight(3);
+        float xSize = 40;
+        float centerX = modalX + boxWidth / 2;
+        float centerY = modalY + boxHeight / 2;
+        lowResCanvas.line(centerX - xSize/2, centerY - xSize/2, centerX + xSize/2, centerY + xSize/2);
+        lowResCanvas.line(centerX - xSize/2, centerY + xSize/2, centerX + xSize/2, centerY - xSize/2);
         
-        // Draw color box with border and rounded corners
-        if (i == 4) {
-          // Rainbow - draw gradient or special pattern
-          // Use animated rainbow colors
-          float rainbowTime = millis() * 0.01;
-          color rainbowColor = color(
-            (sin(rainbowTime) * 0.5 + 0.5) * 255,
-            (sin(rainbowTime + 2.094) * 0.5 + 0.5) * 255,
-            (sin(rainbowTime + 4.189) * 0.5 + 0.5) * 255
-          );
-          lowResCanvas.fill(red(rainbowColor), green(rainbowColor), blue(rainbowColor), opacity);
-        } else {
-          lowResCanvas.fill(red(palette[i]), green(palette[i]), blue(palette[i]), opacity);
+        // Add text below
+        lowResCanvas.fill(255, 0, 0, opacity);
+        lowResCanvas.noStroke();
+        lowResCanvas.textAlign(CENTER, CENTER);
+        lowResCanvas.textSize(8);
+        lowResCanvas.text("N/A", centerX, centerY + xSize/2 + 10);
+      } else {
+        // Draw color palette boxes normally
+        int boxSize = 20;
+        int boxSpacing = 30;
+        int startX = (int)(modalX + (boxWidth - (5 * boxSpacing - (boxSpacing - boxSize))) / 2);
+        
+        for (int i = 0; i < 5; i++) {
+          int boxX = startX + i * boxSpacing;
+          int boxY = (int)(modalY + boxHeight/2 - boxSize/2);
+          
+          // Draw color box with border and rounded corners
+          if (i == 4) {
+            // Rainbow - draw gradient or special pattern
+            // Use animated rainbow colors
+            float rainbowTime = millis() * 0.01;
+            color rainbowColor = color(
+              (sin(rainbowTime) * 0.5 + 0.5) * 255,
+              (sin(rainbowTime + 2.094) * 0.5 + 0.5) * 255,
+              (sin(rainbowTime + 4.189) * 0.5 + 0.5) * 255
+            );
+            lowResCanvas.fill(red(rainbowColor), green(rainbowColor), blue(rainbowColor), opacity);
+          } else {
+            lowResCanvas.fill(red(palette[i]), green(palette[i]), blue(palette[i]), opacity);
+          }
+          
+          // Draw selection highlight with rainbow border
+          if (i == currentColorIndex) {
+            // Use the same rainbow color as the modal border
+            lowResCanvas.stroke(red(borderColor), green(borderColor), blue(borderColor), opacity);
+            lowResCanvas.strokeWeight(2);
+          } else {
+            lowResCanvas.stroke(128, opacity);  // Gray border for non-selected
+            lowResCanvas.strokeWeight(1);
+          }
+          
+          lowResCanvas.rect(boxX, boxY, boxSize, boxSize, 6, 6, 6, 6);  // Rounded corners
         }
-        
-        // Draw selection highlight with rainbow border
-        if (i == currentColorIndex) {
-          // Use the same rainbow color as the modal border
-          lowResCanvas.stroke(red(borderColor), green(borderColor), blue(borderColor), opacity);
-          lowResCanvas.strokeWeight(2);
-        } else {
-          lowResCanvas.stroke(128, opacity);  // Gray border for non-selected
-          lowResCanvas.strokeWeight(1);
-        }
-        
-        lowResCanvas.rect(boxX, boxY, boxSize, boxSize, 6, 6, 6, 6);  // Rounded corners
       }
     } else if (modalShowBrush) {
       // Draw brush circle and size text
@@ -824,9 +921,9 @@ void drawModal() {
       // Draw pen mode icons
       int iconSize = 20;
       int iconSpacing = 30;
-      int startX = (int)(modalX + (boxWidth - (2 * iconSpacing - (iconSpacing - iconSize))) / 2);
+      int startX = (int)(modalX + (boxWidth - (3 * iconSpacing - (iconSpacing - iconSize))) / 2);
       
-      for (int i = 0; i < 2; i++) {
+      for (int i = 0; i < 3; i++) {
         int iconX = startX + i * iconSpacing;
         int iconY = (int)(modalY + boxHeight/2 - iconSize/2);
         
@@ -867,7 +964,40 @@ void drawModal() {
           lowResCanvas.strokeWeight(1);
           lowResCanvas.line(iconX + 6, iconY + 8, iconX + 14, iconY + 8);
           lowResCanvas.line(iconX + 6, iconY + 12, iconX + 14, iconY + 12);
+        } else if (i == PEN_MODE_IMAGE) {
+          // Draw image stamp icon (simplified smiley face or picture icon)
+          lowResCanvas.fill(255, 200, 0, opacity);  // Yellow for smiley
+          lowResCanvas.ellipse(iconX + iconSize/2, iconY + iconSize/2, 14, 14);
+          // Eyes
+          lowResCanvas.fill(0, opacity);
+          lowResCanvas.ellipse(iconX + iconSize/2 - 3, iconY + iconSize/2 - 2, 2, 2);
+          lowResCanvas.ellipse(iconX + iconSize/2 + 3, iconY + iconSize/2 - 2, 2, 2);
+          // Smile
+          lowResCanvas.noFill();
+          lowResCanvas.stroke(0, opacity);
+          lowResCanvas.strokeWeight(1);
+          lowResCanvas.arc(iconX + iconSize/2, iconY + iconSize/2, 8, 8, 0.2, PI - 0.2);
         }
+      }
+    } else if (modalShowImagePreview) {
+      // Draw image preview with chroma key
+      if (stampImages != null && currentImageIndex < stampImages.length && stampImages[currentImageIndex] != null) {
+        PImage img = stampImages[currentImageIndex];
+        
+        // Draw the image with chroma key in the center of the modal
+        float imageSize = min(boxWidth - 20, boxHeight - 20);  // Leave some padding
+        float imageX = modalX + boxWidth / 2;
+        float imageY = modalY + boxHeight / 2;
+        
+        // Draw with chroma key
+        drawImageWithChromaKey(lowResCanvas, img, imageX, imageY, imageSize, (int)opacity);
+        
+        // Draw image name below
+        lowResCanvas.fill(0, opacity);
+        lowResCanvas.textAlign(CENTER, TOP);
+        lowResCanvas.textSize(8);
+        lowResCanvas.noStroke();
+        lowResCanvas.text(stampImageNames[currentImageIndex], modalX + boxWidth/2, modalY + boxHeight - 15);
       }
     } else {
       // Draw text
@@ -886,43 +1016,81 @@ void drawLowResUI() {
   float lowResMouseX = mouseX / displayScale;
   float lowResMouseY = mouseY / displayScale;
   
-  // Use current selected color for brush preview, or white for remove mode
-  color brushColor;
-  if (currentPenMode == PEN_MODE_REMOVE) {
-    brushColor = color(255, 0, 0);  // Red for remove mode
-  } else if (currentColorIndex == 4) {
-    // Rainbow - animated preview color
-    float brushTime = millis() * 0.01;
-    brushColor = color(
-      (sin(brushTime) * 0.5 + 0.5) * 255,
-      (sin(brushTime + 2.094) * 0.5 + 0.5) * 255,
-      (sin(brushTime + 4.189) * 0.5 + 0.5) * 255
-    );
+  // Draw preview based on current pen mode
+  if (currentPenMode == PEN_MODE_IMAGE) {
+    // Image stamp preview with chroma key
+    if (stampImages != null && currentImageIndex < stampImages.length && stampImages[currentImageIndex] != null) {
+      PImage img = stampImages[currentImageIndex];
+      
+      // Transform position if zoomed
+      if (isZoomed && !isSelectingZoom) {
+        float canvasX = (lowResMouseX - zoomOffsetX) / zoomScale;
+        float canvasY = (lowResMouseY - zoomOffsetY) / zoomScale;
+        
+        lowResCanvas.pushMatrix();
+        lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
+        lowResCanvas.scale(zoomScale);
+        
+        // Draw image with chroma key manually
+        drawImageWithChromaKey(lowResCanvas, img, canvasX, canvasY, imageStampSize, 128);
+        
+        // Draw outline
+        lowResCanvas.noFill();
+        lowResCanvas.stroke(0, 128);
+        lowResCanvas.strokeWeight(1);
+        lowResCanvas.rect(canvasX - imageStampSize/2, canvasY - imageStampSize/2, imageStampSize, imageStampSize);
+        
+        lowResCanvas.popMatrix();
+      } else if (!isSelectingZoom) {
+        // Normal image preview with chroma key
+        drawImageWithChromaKey(lowResCanvas, img, lowResMouseX, lowResMouseY, imageStampSize, 128);
+        
+        // Draw outline
+        lowResCanvas.noFill();
+        lowResCanvas.stroke(0, 128);
+        lowResCanvas.strokeWeight(1);
+        lowResCanvas.rect(lowResMouseX - imageStampSize/2, lowResMouseY - imageStampSize/2, imageStampSize, imageStampSize);
+      }
+    }
   } else {
-    brushColor = palette[currentColorIndex];
-  }
-  
-  // Transform brush position if zoomed
-  if (isZoomed && !isSelectingZoom) {
-    float canvasX = (lowResMouseX - zoomOffsetX) / zoomScale;
-    float canvasY = (lowResMouseY - zoomOffsetY) / zoomScale;
+    // Regular brush preview
+    color brushColor;
+    if (currentPenMode == PEN_MODE_REMOVE) {
+      brushColor = color(255, 0, 0);  // Red for remove mode
+    } else if (currentColorIndex == 4) {
+      // Rainbow - animated preview color
+      float brushTime = millis() * 0.01;
+      brushColor = color(
+        (sin(brushTime) * 0.5 + 0.5) * 255,
+        (sin(brushTime + 2.094) * 0.5 + 0.5) * 255,
+        (sin(brushTime + 4.189) * 0.5 + 0.5) * 255
+      );
+    } else {
+      brushColor = palette[currentColorIndex];
+    }
     
-    lowResCanvas.noFill();
-    lowResCanvas.stroke(brushColor);
-    lowResCanvas.strokeWeight(1);  // Lighter weight
-    
-    // Draw brush at zoomed position
-    lowResCanvas.pushMatrix();
-    lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
-    lowResCanvas.scale(zoomScale);
-    lowResCanvas.ellipse(canvasX, canvasY, brushSize, brushSize);
-    lowResCanvas.popMatrix();
-  } else if (!isSelectingZoom) {
-    // Normal brush preview
-    lowResCanvas.noFill();
-    lowResCanvas.stroke(brushColor);
-    lowResCanvas.strokeWeight(1);  // Lighter weight
-    lowResCanvas.ellipse(lowResMouseX, lowResMouseY, brushSize, brushSize);
+    // Transform brush position if zoomed
+    if (isZoomed && !isSelectingZoom) {
+      float canvasX = (lowResMouseX - zoomOffsetX) / zoomScale;
+      float canvasY = (lowResMouseY - zoomOffsetY) / zoomScale;
+      
+      lowResCanvas.noFill();
+      lowResCanvas.stroke(brushColor);
+      lowResCanvas.strokeWeight(1);  // Lighter weight
+      
+      // Draw brush at zoomed position
+      lowResCanvas.pushMatrix();
+      lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
+      lowResCanvas.scale(zoomScale);
+      lowResCanvas.ellipse(canvasX, canvasY, brushSize, brushSize);
+      lowResCanvas.popMatrix();
+    } else if (!isSelectingZoom) {
+      // Normal brush preview
+      lowResCanvas.noFill();
+      lowResCanvas.stroke(brushColor);
+      lowResCanvas.strokeWeight(1);  // Lighter weight
+      lowResCanvas.ellipse(lowResMouseX, lowResMouseY, brushSize, brushSize);
+    }
   }
   
   // Only show debug info if Tab key is pressed
@@ -941,7 +1109,11 @@ void drawLowResUI() {
       lowResCanvas.text("PEN: " + penModeNames[currentPenMode], 2, 2);
     }
     
-    lowResCanvas.text("BRUSH: " + (int)brushSize + "px", 2, 10);
+    if (currentPenMode == PEN_MODE_IMAGE) {
+      lowResCanvas.text("IMAGE: " + stampImageNames[currentImageIndex] + " " + (int)imageStampSize + "px", 2, 10);
+    } else {
+      lowResCanvas.text("BRUSH: " + (int)brushSize + "px", 2, 10);
+    }
     if (!isZoomed) {
       lowResCanvas.text("Y: " + (int)scrollY, 2, 18);
     }
@@ -1334,9 +1506,16 @@ class MidiReceiver implements Receiver {
         
         // Handle CC1 for pen mode selection
         if (ccNumber == 1) {
-          // Map MIDI value (0-127) to pen mode (0-1)
-          // 0-63: Default pen, 64-127: Remove pen
-          int newPenMode = value < 64 ? PEN_MODE_DEFAULT : PEN_MODE_REMOVE;
+          // Map MIDI value (0-127) to pen mode (0-2)
+          // 0-42: Default pen, 43-85: Remove pen, 86-127: Image pen
+          int newPenMode;
+          if (value < 43) {
+            newPenMode = PEN_MODE_DEFAULT;
+          } else if (value < 86) {
+            newPenMode = PEN_MODE_REMOVE;
+          } else {
+            newPenMode = PEN_MODE_IMAGE;
+          }
           
           // Set pending pen mode (thread-safe)
           pendingPenMode = newPenMode;
@@ -1345,30 +1524,55 @@ class MidiReceiver implements Receiver {
           println("MIDI CC1: value=" + value + " → Pen mode = " + penModeNames[newPenMode]);
         }
         
-        // Handle CC2 for color selection
+        // Handle CC2 for color/image selection
         if (ccNumber == 2) {
-          // Map MIDI value (0-127) to color index (0-4)
-          // 0-25: Black, 26-51: Green, 52-77: Yellow, 78-103: Light Gray, 104-127: Rainbow
-          int newColorIndex = constrain(value * 5 / 128, 0, 4);
-          
-          // Set pending color index (thread-safe)
-          pendingColorIndex = newColorIndex;
-          
-          // Visual feedback
-          println("MIDI CC2: value=" + value + " → Color = " + colorNames[newColorIndex]);
+          if (currentPenMode == PEN_MODE_IMAGE) {
+            // In image mode, CC2 selects the image
+            // Currently we only have 1 image, but prepared for more
+            int newImageIndex = 0;  // Always smile.png for now
+            
+            // Set pending image index (thread-safe)
+            pendingImageIndex = newImageIndex;
+            
+            // Visual feedback
+            println("MIDI CC2: value=" + value + " → Image = " + stampImageNames[newImageIndex]);
+          } else {
+            // In other modes, CC2 selects color
+            // Map MIDI value (0-127) to color index (0-4)
+            // 0-25: Black, 26-51: Green, 52-77: Yellow, 78-103: Light Gray, 104-127: Rainbow
+            int newColorIndex = constrain(value * 5 / 128, 0, 4);
+            
+            // Set pending color index (thread-safe)
+            pendingColorIndex = newColorIndex;
+            
+            // Visual feedback
+            println("MIDI CC2: value=" + value + " → Color = " + colorNames[newColorIndex]);
+          }
         }
         
-        // Handle CC3 for brush size
+        // Handle CC3 for brush/image size
         if (ccNumber == 3) {
-          // Map MIDI value (0-127) to brush size (1-8px)
-          float newBrushSize = map(value, 0, 127, 1, 8);
-          newBrushSize = constrain(newBrushSize, 1, 8);
-          
-          // Set pending brush size (thread-safe)
-          pendingBrushSize = newBrushSize;
-          
-          // Visual feedback
-          println("MIDI CC3: value=" + value + " → Brush size = " + (int)newBrushSize + "px");
+          if (currentPenMode == PEN_MODE_IMAGE) {
+            // In image mode, CC3 controls image size (10-128px)
+            float newImageSize = map(value, 0, 127, 10, 128);
+            newImageSize = constrain(newImageSize, 10, 128);
+            
+            // Set pending image size (thread-safe)
+            pendingImageSize = newImageSize;
+            
+            // Visual feedback
+            println("MIDI CC3: value=" + value + " → Image size = " + (int)newImageSize + "px");
+          } else {
+            // In other modes, CC3 controls brush size (1-8px)
+            float newBrushSize = map(value, 0, 127, 1, 8);
+            newBrushSize = constrain(newBrushSize, 1, 8);
+            
+            // Set pending brush size (thread-safe)
+            pendingBrushSize = newBrushSize;
+            
+            // Visual feedback
+            println("MIDI CC3: value=" + value + " → Brush size = " + (int)newBrushSize + "px");
+          }
         }
       }
     }
@@ -1377,6 +1581,38 @@ class MidiReceiver implements Receiver {
   public void close() {
     // Cleanup if needed
   }
+}
+
+// Helper function to draw image with blue chroma key
+void drawImageWithChromaKey(PGraphics canvas, PImage img, float x, float y, float size, int alpha) {
+  // Create a temporary image for chroma keyed version
+  PImage chromaKeyed = createImage(img.width, img.height, ARGB);
+  chromaKeyed.loadPixels();
+  img.loadPixels();
+  
+  // Apply chroma key for blue (0, 0, 255)
+  for (int i = 0; i < img.pixels.length; i++) {
+    color c = img.pixels[i];
+    float r = red(c);
+    float g = green(c);
+    float b = blue(c);
+    
+    // Check if pixel is blue (with some tolerance)
+    float blueDiff = abs(b - 255) + abs(r - 0) + abs(g - 0);
+    
+    if (blueDiff < 30) {  // Blue pixel - make transparent
+      chromaKeyed.pixels[i] = color(0, 0, 0, 0);
+    } else {
+      // Non-blue pixel - keep with specified alpha
+      chromaKeyed.pixels[i] = color(r, g, b, alpha);
+    }
+  }
+  chromaKeyed.updatePixels();
+  
+  // Draw the chroma keyed image
+  canvas.imageMode(CENTER);
+  canvas.image(chromaKeyed, x, y, size, size);
+  canvas.imageMode(CORNER);
 }
 
 // Clean up on exit
