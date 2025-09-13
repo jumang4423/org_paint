@@ -7,6 +7,7 @@ uniform vec2 u_mouse;
 uniform vec2 u_prevMouse;
 uniform float u_brushSize;
 uniform float u_isErasing;
+uniform vec3 u_paintColor;
 
 varying vec4 vertTexCoord;
 
@@ -22,7 +23,7 @@ void main() {
     vec2 uv = vertTexCoord.st;
     
     // Get pixel position - Y座標を反転
-    vec2 pixelPos = vec2(uv.x * 576.0, (1.0 - uv.y) * 1024.0);
+    vec2 pixelPos = vec2(uv.x * 576.0, (1.0 - uv.y) * 256.0);
     
     // Sample previous frame
     vec4 prevColor = texture2D(texture, uv);
@@ -42,7 +43,7 @@ void main() {
     float mask = dist <= brushRadius ? 1.0 : 0.0;  // Hard cutoff, no smoothstep
     
     // Paint or erase
-    vec4 paintColor = mix(vec4(0.0, 0.0, 0.0, 1.0), vec4(1.0, 1.0, 1.0, 1.0), u_isErasing);
+    vec4 paintColor = u_isErasing > 0.5 ? vec4(1.0, 1.0, 1.0, 1.0) : vec4(u_paintColor, 1.0);
     
     // Apply brush
     gl_FragColor = mix(prevColor, paintColor, mask);

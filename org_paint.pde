@@ -4,6 +4,7 @@
 
 import java.io.*;
 import javax.sound.midi.*;
+import processing.opengl.*;
 
 PShader paintShader;
 ArrayList<PGraphics> chunkTextures;  // GPU textures
@@ -12,18 +13,32 @@ ArrayList<Integer> chunkPositions;
 
 // Canvas settings
 final int CANVAS_WIDTH = 576;
-final int CHUNK_HEIGHT = 1024;
+final int CHUNK_HEIGHT = 256;  // Smaller chunks for better memory usage
 int SCREEN_HEIGHT = 324;  // Will be recalculated based on screen
-final int MAX_CHUNKS = 20;  // Memory limit
+final int MAX_CHUNKS = 50;  // Can have more chunks since they're smaller
 
 // Drawing state
 boolean isDrawing = false;
 boolean isErasing = false;
 float brushSize = 2.0;  // Default 2px
 float scrollY = 0;
-boolean needsRedraw = true;  // Optimization flag
 boolean pendingSave = false;  // Flag for deferred save operation
 boolean pendingPrint = false;  // Flag for print after save
+boolean showDebugInfo = false;  // Toggle debug info with Tab key
+
+// Color palette
+int currentColorIndex = 0;  // 0=black, 1=green, 2=yellow, 3=lightgray
+color[] palette = new color[4];
+String[] colorNames = {"BLACK", "GREEN", "YELLOW", "LIGHT GRAY"};
+
+// Modal system
+String modalMessage = "";
+int modalStartTime = 0;
+int modalDuration = 1000;  // Default 1 second
+boolean modalVisible = false;
+boolean modalPersistent = false;  // Keep modal visible until manually cleared
+boolean modalShowColorPalette = false;  // Show color palette in modal
+boolean modalShowBrush = false;  // Show brush circle in modal
 
 // Zoom state
 boolean isSelectingZoom = false;  // Currently selecting zoom area
@@ -33,7 +48,6 @@ PVector zoomSelectionEnd = new PVector(-1, -1);
 float zoomScale = 1.0;
 float zoomOffsetX = 0;
 float zoomOffsetY = 0;
-boolean spaceKeyPressed = false;
 
 // Mouse state for shader
 PVector currentMouse = new PVector(-1, -1);
@@ -47,22 +61,26 @@ boolean hasRedo = false;
 boolean captureUndoState = false;  // Flag to capture state before next paint
 boolean pendingUndo = false;  // Defer undo to draw loop
 boolean pendingRedo = false;  // Defer redo to draw loop
-int undoRedrawFrames = 0;  // Counter to ensure proper screen update after undo/redo
 
 // Scaling for display
 PGraphics lowResCanvas;
+PGraphics rainbowBuffer;  // Cache for rainbow pattern
+int rainbowUpdateCounter = 0;
 float displayScale = 1.0;
 
 // MIDI
 MidiDevice midiDevice = null;
 boolean midiConnected = false;
 volatile float pendingBrushSize = -1;  // Thread-safe variable for MIDI updates
+volatile int pendingColorIndex = -1;  // Thread-safe variable for color selection
 int lastMidiCheck = 0;
 float lastKnownBrushSize = 2.0;  // Track last brush size to detect changes
 
 void setup() {
   fullScreen(P3D);  // Fullscreen
   noSmooth();  // Disable antialiasing for pixel-perfect rendering
+  hint(DISABLE_TEXTURE_MIPMAPS);  // Disable mipmaps for sharp pixels
+  ((PGraphicsOpenGL)g).textureSampling(2);  // Nearest neighbor sampling
   
   // Calculate scale to fill screen width (prioritize full 576px width accessibility)
   displayScale = (float)width / CANVAS_WIDTH;
@@ -74,6 +92,10 @@ void setup() {
   lowResCanvas = createGraphics(CANVAS_WIDTH, SCREEN_HEIGHT, P3D);
   lowResCanvas.noSmooth();  // No antialiasing on low-res canvas too
   
+  // Create rainbow buffer for background pattern
+  rainbowBuffer = createGraphics(CANVAS_WIDTH, SCREEN_HEIGHT, P3D);
+  rainbowBuffer.noSmooth();
+  
   // Initialize GPU texture arrays
   chunkTextures = new ArrayList<PGraphics>();
   chunkBuffers = new ArrayList<PGraphics>();
@@ -82,6 +104,12 @@ void setup() {
   // Initialize undo/redo arrays
   undoChunkTextures = new ArrayList<PGraphics>();
   redoChunkTextures = new ArrayList<PGraphics>();
+  
+  // Initialize color palette
+  palette[0] = color(0, 0, 0);       // Black
+  palette[1] = color(0, 255, 0);     // Green  
+  palette[2] = color(200, 200, 0);   // Darker Yellow (better for printing)
+  palette[3] = color(192, 192, 192); // Light gray
   
   // Load final GLSL paint shader
   paintShader = loadShader("paint_final_frag.glsl");
@@ -92,8 +120,8 @@ void setup() {
   // Initialize MIDI
   initMIDI();
   
-  // OPTIMIZATION: Only render when needed
-  noLoop();
+  // Set a reasonable frame rate to save CPU
+  frameRate(60);
   
   println("GLSL-based infinite canvas initialized (optimized)");
   println("Canvas width: " + CANVAS_WIDTH + "px");
@@ -103,13 +131,14 @@ void setup() {
   println("  - Left click: Draw");
   println("  - Right click: Erase");
   println("  - Mouse wheel/Arrow keys: Scroll");
-  println("  - Q/A: Brush size");
   println("  - P: Save and Print to thermal printer");
-  println("  - Space: Hold to select zoom area, press again to exit zoom");
+  println("  - Space: Toggle zoom mode (select area with mouse, Space again to exit)");
+  println("  - Tab (hold): Show debug info");
   println("  - Cmd+Z: Undo last action");
   println("  - Cmd+Shift+Z: Redo last action");
   if (midiConnected) {
     println("  - MIDI CC1: Brush size (1-8px)");
+    println("  - MIDI CC2: Color selection (Black, Green, Yellow, Light Gray)");
   }
 }
 
@@ -171,7 +200,6 @@ void performUndo() {
   
   hasRedo = true;
   hasUndo = false;
-  needsRedraw = true;
 }
 
 // Perform redo operation
@@ -204,7 +232,6 @@ void performRedo() {
   
   hasUndo = true;
   hasRedo = false;
-  needsRedraw = true;
 }
 
 void createGPUChunk(int yPos) {
@@ -284,6 +311,10 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
   paintShader.set("u_brushSize", brushSize);
   paintShader.set("u_isErasing", isErasing ? 1.0 : 0.0);
   
+  // Pass color to shader
+  color currentColor = palette[currentColorIndex];
+  paintShader.set("u_paintColor", red(currentColor)/255.0, green(currentColor)/255.0, blue(currentColor)/255.0);
+  
   // Apply shader to buffer
   bufferTexture.beginDraw();
   bufferTexture.shader(paintShader);
@@ -308,27 +339,24 @@ void draw() {
   if (pendingUndo) {
     performUndo();
     pendingUndo = false;
-    needsRedraw = true;
-    undoRedrawFrames = 3;  // Ensure 3 frames of rendering
-    // Don't return here - continue to render the frame
   }
   if (pendingRedo) {
     performRedo();
     pendingRedo = false;
-    needsRedraw = true;
-    undoRedrawFrames = 3;  // Ensure 3 frames of rendering
-    // Don't return here - continue to render the frame
   }
   
   // Check for pending MIDI updates (thread-safe)
   if (pendingBrushSize > 0) {
     brushSize = pendingBrushSize;
     pendingBrushSize = -1;
-    needsRedraw = true;
+    showBrushModal();  // Show brush modal with circle
   }
   
-  // OPTIMIZATION: Early return if nothing to update (but keep going if undo frames are active)
-  if (!needsRedraw && !isDrawing && !isErasing && undoRedrawFrames == 0) return;
+  if (pendingColorIndex >= 0) {
+    currentColorIndex = pendingColorIndex;
+    pendingColorIndex = -1;
+    showColorPaletteModal();
+  }
   
   // Calculate max scroll based on actual content
   float maxScroll = getMaxContentY() - SCREEN_HEIGHT;
@@ -376,26 +404,42 @@ void draw() {
   
   // Render to low-res canvas first
   lowResCanvas.beginDraw();
-  lowResCanvas.background(200);
+  lowResCanvas.background(255);  // Start with white background
   
   // Apply zoom transformation if zoomed
   if (isZoomed) {
     lowResCanvas.pushMatrix();
     lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
     lowResCanvas.scale(zoomScale);
+    lowResCanvas.noSmooth();  // Ensure no antialiasing when zoomed
   }
   
   // Render visible chunks to low-res canvas
   int startChunkY = max(0, (int)(scrollY / CHUNK_HEIGHT) * CHUNK_HEIGHT);
   int endChunkY = (int)((scrollY + SCREEN_HEIGHT) / CHUNK_HEIGHT + 1) * CHUNK_HEIGHT;
   
+  // Track which areas have chunks for rainbow rendering
+  boolean[] hasChunk = new boolean[(endChunkY - startChunkY) / CHUNK_HEIGHT + 1];
+  
   for (int chunkY = startChunkY; chunkY <= endChunkY; chunkY += CHUNK_HEIGHT) {
+    boolean found = false;
     for (int i = 0; i < chunkPositions.size(); i++) {
       if (chunkPositions.get(i) == chunkY) {
         PGraphics chunk = chunkTextures.get(i);
         float renderY = chunkY - scrollY;
         lowResCanvas.image(chunk, 0, renderY);
+        hasChunk[(chunkY - startChunkY) / CHUNK_HEIGHT] = true;
+        found = true;
         break;
+      }
+    }
+    
+    // Draw rainbow only where no chunk exists
+    if (!found) {
+      float renderY = chunkY - scrollY;
+      // Only draw if visible on screen
+      if (renderY < SCREEN_HEIGHT && renderY + CHUNK_HEIGHT > 0) {
+        drawRainbowSection(renderY, min(CHUNK_HEIGHT, SCREEN_HEIGHT - (int)renderY));
       }
     }
   }
@@ -409,13 +453,34 @@ void draw() {
   
   // Draw zoom selection rectangle if selecting
   if (isSelectingZoom && zoomSelectionStart.x >= 0) {
-    lowResCanvas.noFill();
-    lowResCanvas.stroke(100, 200, 255);
-    lowResCanvas.strokeWeight(2);
+    // Happy bright colors only!
+    float time = millis() * 0.001;  // Much faster animation (20x faster)
+    color[] happyColors = {
+      color(255, 255, 85),  // Bright Yellow
+      color(85, 255, 255),  // Bright Cyan
+      color(255, 85, 255),  // Bright Magenta
+      color(85, 255, 85),   // Bright Green
+      color(255, 170, 85),  // Bright Orange
+      color(255, 85, 170),  // Hot Pink
+      color(170, 255, 85),  // Lime
+      color(85, 255, 170),  // Mint
+      color(255, 255, 170), // Pale Yellow
+      color(170, 255, 255), // Pale Cyan
+      color(255, 170, 255), // Pale Magenta
+      color(170, 170, 255)  // Sky Blue
+    };
+    
     float x1 = min(zoomSelectionStart.x, zoomSelectionEnd.x);
     float y1 = min(zoomSelectionStart.y, zoomSelectionEnd.y);
     float x2 = max(zoomSelectionStart.x, zoomSelectionEnd.x);
     float y2 = max(zoomSelectionStart.y, zoomSelectionEnd.y);
+    
+    // Fast cycling through happy colors
+    int colorIndex = (int)(time * 10) % happyColors.length;
+    
+    lowResCanvas.noFill();
+    lowResCanvas.stroke(happyColors[colorIndex]);
+    lowResCanvas.strokeWeight(3);  // Slightly thicker for visibility
     lowResCanvas.rect(x1, y1, x2 - x1, y2 - y1);
   }
   
@@ -426,18 +491,283 @@ void draw() {
   
   pushMatrix();
   scale(displayScale);
+  noSmooth();  // No antialiasing during final scaling
   image(lowResCanvas, 0, 0);
   popMatrix();
+}
+
+void drawRainbowSection(float yOffset, int height) {
+  // Fast old-school dither pattern (like Amiga/C64 demos)
+  float time = millis() * 0.00005;  // Very slow scroll
   
-  // Reset redraw flag
-  needsRedraw = false;
+  // Classic 4x4 ordered dither for speed
+  int[][] dither4 = {
+    {0, 8, 2, 10},
+    {12, 4, 14, 6},
+    {3, 11, 1, 9},
+    {15, 7, 13, 5}
+  };
   
-  // Handle undo/redo frame counter
-  if (undoRedrawFrames > 0) {
-    undoRedrawFrames--;
-    needsRedraw = true;  // Keep rendering
-    if (undoRedrawFrames == 0) {
-      noLoop();  // Stop loop after undo/redo frames complete
+  // Bright Amiga/Commodore style colors only!
+  color[] retroColors = {
+    color(255, 255, 255), // White
+    color(255, 255, 85),  // Yellow
+    color(85, 255, 255),  // Light Cyan
+    color(255, 85, 255),  // Light Magenta
+    color(85, 255, 85),   // Light Green
+    color(255, 85, 85),   // Light Red
+    color(85, 85, 255),   // Light Blue
+    color(255, 170, 85),  // Orange
+    color(255, 85, 170),  // Pink
+    color(170, 255, 85),  // Lime
+    color(85, 255, 170),  // Mint
+    color(170, 85, 255),  // Purple
+    color(255, 255, 170), // Pale Yellow
+    color(170, 255, 255), // Pale Cyan
+    color(255, 170, 255), // Pale Magenta
+    color(170, 170, 255)  // Pale Blue
+  };
+  
+  lowResCanvas.strokeWeight(1);
+  lowResCanvas.noSmooth();
+  
+  // Draw in 8x8 pixel blocks for MUCH better performance
+  int blockSize = 8;
+  for (int y = 0; y < height; y += blockSize) {
+    for (int x = 0; x < CANVAS_WIDTH; x += blockSize) {
+      float globalY = yOffset + y + scrollY;
+      
+      // Get dither position
+      int dx = (x / blockSize) % 4;
+      int dy = ((int)(globalY / blockSize)) % 4;
+      float ditherValue = dither4[dy][dx] / 15.0;
+      
+      // Create diagonal scrolling bands
+      float bandPos = ((globalY + x) * 0.01 + time * 100);
+      int colorIndex = (int)(bandPos + ditherValue * 4) % 16;
+      
+      // Apply the retro color
+      color c = retroColors[colorIndex];
+      
+      // Add scanline pattern within block
+      lowResCanvas.noStroke();
+      lowResCanvas.fill(c);
+      lowResCanvas.rect(x, yOffset + y, blockSize, blockSize);
+      
+      // Add simple dither texture with lines
+      if (ditherValue > 0.5) {
+        lowResCanvas.stroke(lerpColor(c, color(255, 255, 255), 0.2));
+        lowResCanvas.strokeWeight(1);
+        // Draw some dither lines for texture
+        lowResCanvas.line(x, yOffset + y + 2, x + blockSize, yOffset + y + 2);
+        lowResCanvas.line(x, yOffset + y + 6, x + blockSize, yOffset + y + 6);
+      }
+    }
+  }
+}
+
+// Show a modal message for a specified duration
+void showModal(String message, int duration) {
+  modalMessage = message;
+  modalStartTime = millis();
+  modalDuration = duration;
+  modalVisible = true;
+  modalPersistent = false;
+  modalShowColorPalette = false;
+  modalShowBrush = false;  // Reset brush modal flag
+}
+
+// Show color palette modal
+void showColorPaletteModal() {
+  modalMessage = "";
+  modalStartTime = millis();
+  modalDuration = 1500;
+  modalVisible = true;
+  modalPersistent = false;
+  modalShowColorPalette = true;
+  modalShowBrush = false;
+}
+
+// Show brush size modal
+void showBrushModal() {
+  modalMessage = "";
+  modalStartTime = millis();
+  modalDuration = 500;
+  modalVisible = true;
+  modalPersistent = false;
+  modalShowColorPalette = false;
+  modalShowBrush = true;
+}
+
+// Show a modal with default 1 second duration
+void showModal(String message) {
+  showModal(message, 1000);
+}
+
+// Show a persistent modal that stays until cleared
+void showPersistentModal(String message) {
+  modalMessage = message;
+  modalVisible = true;
+  modalPersistent = true;
+  modalShowColorPalette = false;  // Reset other modal types
+  modalShowBrush = false;  // Reset other modal types
+}
+
+// Clear persistent modal
+void clearPersistentModal() {
+  if (modalPersistent) {
+    modalVisible = false;
+    modalPersistent = false;
+  }
+}
+
+// Draw modal if visible
+void drawModal() {
+  if (modalVisible) {
+    // Check if modal should still be visible (only for non-persistent modals)
+    if (!modalPersistent && millis() - modalStartTime > modalDuration) {
+      modalVisible = false;
+      return;
+    }
+    
+    // Calculate fade out effect (last 200ms, only for non-persistent modals)
+    float opacity = 255;
+    if (!modalPersistent) {
+      int timeLeft = modalDuration - (millis() - modalStartTime);
+      if (timeLeft < 200) {
+        opacity = map(timeLeft, 0, 200, 0, 255);
+      }
+    }
+    
+    // Calculate dimensions based on content
+    lowResCanvas.textSize(10);
+    float padding = 8;
+    float boxWidth, boxHeight;
+    
+    if (modalShowColorPalette) {
+      // For color palette, we need wider box for color squares
+      boxWidth = 150;  // Fixed width for color palette
+      boxHeight = 30;  // Height for color boxes
+    } else if (modalShowBrush) {
+      // For brush display
+      boxWidth = 80;  // Smaller width for brush
+      boxHeight = 24;  // Compact height
+    } else {
+      float textWidth = lowResCanvas.textWidth(modalMessage);
+      boxWidth = textWidth + padding * 2;
+      boxHeight = 20;  // Normal height for text
+    }
+    
+    // Determine which quadrant the mouse is in (in low-res coordinates)
+    float lowResMouseX = mouseX / displayScale;
+    float lowResMouseY = mouseY / displayScale;
+    boolean mouseInRightHalf = lowResMouseX > CANVAS_WIDTH / 2;
+    boolean mouseInBottomHalf = lowResMouseY > SCREEN_HEIGHT / 2;
+    
+    // Calculate modal position (opposite quadrant from mouse)
+    float modalX, modalY;
+    if (mouseInRightHalf) {
+      // Mouse is on right, show modal on left
+      modalX = 4;
+    } else {
+      // Mouse is on left, show modal on right
+      modalX = CANVAS_WIDTH - boxWidth - 4;
+    }
+    
+    if (mouseInBottomHalf) {
+      // Mouse is on bottom, show modal on top
+      modalY = 4;
+    } else {
+      // Mouse is on top, show modal on bottom
+      modalY = SCREEN_HEIGHT - boxHeight - 4;
+    }
+    
+    // Happy bright colors for rainbow border
+    float time = millis() * 0.001;  // Fast animation
+    color[] happyColors = {
+      color(255, 255, 85),  // Bright Yellow
+      color(85, 255, 255),  // Bright Cyan
+      color(255, 85, 255),  // Bright Magenta
+      color(85, 255, 85),   // Bright Green
+      color(255, 170, 85),  // Bright Orange
+      color(255, 85, 170),  // Hot Pink
+      color(170, 255, 85),  // Lime
+      color(85, 255, 170),  // Mint
+      color(255, 255, 170), // Pale Yellow
+      color(170, 255, 255), // Pale Cyan
+      color(255, 170, 255), // Pale Magenta
+      color(170, 170, 255)  // Sky Blue
+    };
+    
+    // Fast cycling through happy colors
+    int colorIndex = (int)(time * 10) % happyColors.length;
+    color borderColor = happyColors[colorIndex];
+    
+    // Apply opacity to colors
+    if (opacity < 255) {
+      borderColor = color(red(borderColor), green(borderColor), blue(borderColor), opacity);
+    }
+    
+    // Draw white background with rounded corners
+    lowResCanvas.fill(255, opacity);  // White background
+    lowResCanvas.noStroke();
+    lowResCanvas.rect(modalX, modalY, boxWidth, boxHeight, 12, 12, 12, 12);  // Large border radius
+    
+    // Draw rainbow border with rounded corners
+    lowResCanvas.noFill();
+    lowResCanvas.stroke(borderColor);
+    lowResCanvas.strokeWeight(2);
+    lowResCanvas.rect(modalX, modalY, boxWidth, boxHeight, 12, 12, 12, 12);  // Large border radius
+    
+    // Draw content
+    if (modalShowColorPalette) {
+      // Draw color palette boxes
+      int boxSize = 20;
+      int boxSpacing = 30;
+      int startX = (int)(modalX + (boxWidth - (4 * boxSpacing - (boxSpacing - boxSize))) / 2);
+      
+      for (int i = 0; i < 4; i++) {
+        int boxX = startX + i * boxSpacing;
+        int boxY = (int)(modalY + boxHeight/2 - boxSize/2);
+        
+        // Draw color box with border and rounded corners
+        lowResCanvas.fill(red(palette[i]), green(palette[i]), blue(palette[i]), opacity);
+        
+        // Draw selection highlight with rainbow border
+        if (i == currentColorIndex) {
+          // Use the same rainbow color as the modal border
+          lowResCanvas.stroke(red(borderColor), green(borderColor), blue(borderColor), opacity);
+          lowResCanvas.strokeWeight(2);
+        } else {
+          lowResCanvas.stroke(128, opacity);  // Gray border for non-selected
+          lowResCanvas.strokeWeight(1);
+        }
+        
+        lowResCanvas.rect(boxX, boxY, boxSize, boxSize, 6, 6, 6, 6);  // Rounded corners
+      }
+    } else if (modalShowBrush) {
+      // Draw brush circle and size text
+      float brushX = modalX + 20;
+      float brushY = modalY + boxHeight/2;
+      
+      // Draw the actual brush circle
+      lowResCanvas.noFill();
+      lowResCanvas.stroke(0, opacity);  // Black circle
+      lowResCanvas.strokeWeight(1);
+      lowResCanvas.ellipse(brushX, brushY, brushSize, brushSize);
+      
+      // Draw size text (vertically centered)
+      lowResCanvas.fill(0, opacity);
+      lowResCanvas.textAlign(LEFT, CENTER);
+      lowResCanvas.textSize(10);
+      lowResCanvas.noStroke();
+      lowResCanvas.text(": " + (int)brushSize + "px", brushX + brushSize/2 + 8, brushY - 1);  // Adjusted Y position
+    } else {
+      // Draw text
+      lowResCanvas.fill(0, opacity);  // Black text on white background
+      lowResCanvas.textAlign(LEFT, TOP);
+      lowResCanvas.noStroke();
+      lowResCanvas.text(modalMessage, modalX + padding, modalY + 4);
     }
   }
 }
@@ -449,14 +779,17 @@ void drawLowResUI() {
   float lowResMouseX = mouseX / displayScale;
   float lowResMouseY = mouseY / displayScale;
   
+  // Use current selected color for brush preview
+  color brushColor = palette[currentColorIndex];
+  
   // Transform brush position if zoomed
   if (isZoomed && !isSelectingZoom) {
     float canvasX = (lowResMouseX - zoomOffsetX) / zoomScale;
     float canvasY = (lowResMouseY - zoomOffsetY) / zoomScale;
     
     lowResCanvas.noFill();
-    lowResCanvas.stroke(isErasing ? color(255, 100, 100) : color(100, 100, 255));
-    lowResCanvas.strokeWeight(1);
+    lowResCanvas.stroke(brushColor);
+    lowResCanvas.strokeWeight(1);  // Lighter weight
     
     // Draw brush at zoomed position
     lowResCanvas.pushMatrix();
@@ -467,34 +800,40 @@ void drawLowResUI() {
   } else if (!isSelectingZoom) {
     // Normal brush preview
     lowResCanvas.noFill();
-    lowResCanvas.stroke(isErasing ? color(255, 100, 100) : color(100, 100, 255));
-    lowResCanvas.strokeWeight(1);
+    lowResCanvas.stroke(brushColor);
+    lowResCanvas.strokeWeight(1);  // Lighter weight
     lowResCanvas.ellipse(lowResMouseX, lowResMouseY, brushSize, brushSize);
   }
   
-  // Info text - BLACK color for white background
-  lowResCanvas.fill(0);  // Black text
-  lowResCanvas.noStroke();
-  lowResCanvas.textAlign(LEFT, TOP);
-  lowResCanvas.textSize(8);  // Small pixel font size
-  
-  if (isSelectingZoom) {
-    lowResCanvas.text("SELECTING ZOOM AREA", 2, 2);
-  } else if (isZoomed) {
-    lowResCanvas.text("ZOOMED: " + nf(zoomScale, 1, 1) + "x (SPACE to exit)", 2, 2);
-  } else {
-    lowResCanvas.text("MODE: " + (isErasing ? "ERASE" : "DRAW"), 2, 2);
+  // Only show debug info if Tab key is pressed
+  if (showDebugInfo) {
+    // Info text - BLACK color for white background
+    lowResCanvas.fill(0);  // Black text
+    lowResCanvas.noStroke();
+    lowResCanvas.textAlign(LEFT, TOP);
+    lowResCanvas.textSize(8);  // Small pixel font size
+    
+    if (isSelectingZoom) {
+      lowResCanvas.text("SELECTING ZOOM AREA", 2, 2);
+    } else if (isZoomed) {
+      lowResCanvas.text("ZOOMED: " + nf(zoomScale, 1, 1) + "x (SPACE to exit)", 2, 2);
+    } else {
+      lowResCanvas.text("MODE: " + (isErasing ? "ERASE" : "DRAW"), 2, 2);
+    }
+    
+    lowResCanvas.text("BRUSH: " + (int)brushSize + "px", 2, 10);
+    if (!isZoomed) {
+      lowResCanvas.text("Y: " + (int)scrollY, 2, 18);
+    }
+    lowResCanvas.text("X: " + (int)lowResMouseX + "/" + CANVAS_WIDTH, 2, isZoomed ? 18 : 26);
+    lowResCanvas.text("FPS: " + (int)frameRate, 2, isZoomed ? 26 : 34);
+    if (midiConnected) {
+      lowResCanvas.text("MIDI: ON", 2, isZoomed ? 34 : 42);
+    }
   }
   
-  lowResCanvas.text("BRUSH: " + (int)brushSize + "px", 2, 10);
-  if (!isZoomed) {
-    lowResCanvas.text("Y: " + (int)scrollY, 2, 18);
-  }
-  lowResCanvas.text("X: " + (int)lowResMouseX + "/" + CANVAS_WIDTH, 2, isZoomed ? 18 : 26);
-  lowResCanvas.text("FPS: " + (int)frameRate, 2, isZoomed ? 26 : 34);
-  if (midiConnected) {
-    lowResCanvas.text("MIDI: ON", 2, isZoomed ? 34 : 42);
-  }
+  // Draw modal on top of everything
+  drawModal();
 }
 
 void mousePressed() {
@@ -502,13 +841,11 @@ void mousePressed() {
   if (isSelectingZoom) {
     zoomSelectionStart.set(mouseX / displayScale, mouseY / displayScale);
     zoomSelectionEnd.set(mouseX / displayScale, mouseY / displayScale);
-    needsRedraw = true;
-    loop();
     return;
   }
   
-  // Don't allow painting while space is pressed (might be about to select zoom)
-  if (spaceKeyPressed) {
+  // Don't allow painting while selecting zoom
+  if (isSelectingZoom) {
     return;
   }
   
@@ -532,36 +869,68 @@ void mousePressed() {
   } else {
     prevMouse.set(mouseX / displayScale, mouseY / displayScale + scrollY);
   }
-  loop();  // Start rendering
 }
 
 void mouseReleased() {
-  isDrawing = false;
-  isErasing = false;
-  prevMouse.set(-1, -1);
-  needsRedraw = true;
-  redraw();  // Final frame
-  noLoop();  // Stop rendering
+  // If we were selecting zoom, apply the zoom
+  if (isSelectingZoom && zoomSelectionStart.x >= 0) {
+    // Calculate zoom from selection
+    float x1 = min(zoomSelectionStart.x, zoomSelectionEnd.x);
+    float y1 = min(zoomSelectionStart.y, zoomSelectionEnd.y);
+    float x2 = max(zoomSelectionStart.x, zoomSelectionEnd.x);
+    float y2 = max(zoomSelectionStart.y, zoomSelectionEnd.y);
+    
+    float selWidth = x2 - x1;
+    float selHeight = y2 - y1;
+    
+    // Minimum selection size to zoom (20px)
+    if (selWidth > 20 && selHeight > 20) {
+      // Calculate zoom scale to fit selection to screen
+      float scaleX = CANVAS_WIDTH / selWidth;
+      float scaleY = SCREEN_HEIGHT / selHeight;
+      zoomScale = min(scaleX, scaleY);
+      
+      // Limit zoom scale to reasonable range (1.5x - 10x)
+      zoomScale = constrain(zoomScale, 1.5, 10.0);
+      
+      // Calculate offset to center the selection
+      float centerX = (x1 + x2) / 2;
+      float centerY = (y1 + y2) / 2;
+      
+      // Calculate offset so that zoomed area is centered
+      zoomOffsetX = CANVAS_WIDTH / 2 - centerX * zoomScale;
+      zoomOffsetY = SCREEN_HEIGHT / 2 - centerY * zoomScale;
+      
+      // Apply zoom
+      isZoomed = true;
+      isSelectingZoom = false;
+      clearPersistentModal();  // Clear the selection modal
+      showModal("ZOOMED: " + nf(zoomScale, 1, 1) + "x", 1500);
+    } else {
+      // Selection too small, stay in selection mode
+      zoomSelectionStart.set(-1, -1);
+      zoomSelectionEnd.set(-1, -1);
+    }
+  } else {
+    // Normal mouse release for painting
+    isDrawing = false;
+    isErasing = false;
+    prevMouse.set(-1, -1);
+  }
 }
 
 void mouseMoved() {
   // Brush preview follows mouse
-  needsRedraw = true;
-  redraw();
 }
 
 void mouseDragged() {
   // If selecting zoom, update end position
   if (isSelectingZoom) {
     zoomSelectionEnd.set(mouseX / displayScale, mouseY / displayScale);
-    needsRedraw = true;
-    redraw();
     return;
   }
   
   // Keep rendering while dragging
-  needsRedraw = true;
-  redraw();
 }
 
 void mouseWheel(MouseEvent event) {
@@ -570,12 +939,17 @@ void mouseWheel(MouseEvent event) {
     return;
   }
   
-  // OPTIMIZATION: Direct scroll, no velocity
+  // Direct scroll, no velocity
   float maxScroll = getMaxContentY() - SCREEN_HEIGHT;
   scrollY += event.getCount() * 0.7;  // Back to trackpad-optimized speed
   scrollY = constrain(scrollY, 0, max(0, maxScroll));
-  needsRedraw = true;
-  redraw();
+}
+
+void keyReleased() {
+  // Hide debug info when Tab is released
+  if (key == TAB) {
+    showDebugInfo = false;
+  }
 }
 
 void keyPressed() {
@@ -583,6 +957,12 @@ void keyPressed() {
   if (key == ESC) {
     key = 0;  // Prevent default ESC behavior
     exit();   // Call our custom exit method
+    return;
+  }
+  
+  // Handle Tab key to show debug info (while holding)
+  if (key == TAB) {
+    showDebugInfo = true;
     return;
   }
   
@@ -595,62 +975,46 @@ void keyPressed() {
       if (keyEvent.isShiftDown()) {
         // Cmd+Shift+Z - Redo (deferred to draw loop)
         pendingRedo = true;
-        needsRedraw = true;
-        loop();  // Start rendering loop (will stop after frames complete)
       } else {
         // Cmd+Z - Undo (deferred to draw loop)
         pendingUndo = true;
-        needsRedraw = true;
-        loop();  // Start rendering loop (will stop after frames complete)
       }
       return;
     }
   }
   
-  // Handle Space key for zoom
+  // Handle Space key for zoom (toggle, not hold)
   if (key == ' ') {
-    if (!spaceKeyPressed) {
-      spaceKeyPressed = true;
-      
-      if (isZoomed) {
-        // Exit zoom mode
-        isZoomed = false;
-        zoomScale = 1.0;
-        zoomOffsetX = 0;
-        zoomOffsetY = 0;
-        needsRedraw = true;
-        redraw();
-      } else {
-        // Enter zoom selection mode
-        isSelectingZoom = true;
-        zoomSelectionStart.set(-1, -1);
-        zoomSelectionEnd.set(-1, -1);
-        needsRedraw = true;
-        loop();
-      }
+    if (isZoomed) {
+      // Exit zoom mode
+      isZoomed = false;
+      zoomScale = 1.0;
+      zoomOffsetX = 0;
+      zoomOffsetY = 0;
+      showModal("ZOOM EXIT");
+    } else if (isSelectingZoom) {
+      // Cancel zoom selection
+      isSelectingZoom = false;
+      zoomSelectionStart.set(-1, -1);
+      zoomSelectionEnd.set(-1, -1);
+      clearPersistentModal();  // Clear the selection modal
+      showModal("ZOOM CANCELLED");
+    } else {
+      // Enter zoom selection mode
+      isSelectingZoom = true;
+      zoomSelectionStart.set(-1, -1);
+      zoomSelectionEnd.set(-1, -1);
+      showPersistentModal("ZOOM: Drag to select area");
     }
     return;
   }
   
   switch(key) {
-    case 'q':
-    case 'Q':
-      brushSize = min(brushSize + 1, 8);  // Max 8px
-      needsRedraw = true;
-      redraw();
-      break;
-    case 'a':
-    case 'A':
-      brushSize = max(brushSize - 1, 1);  // Minimum 1px
-      needsRedraw = true;
-      redraw();
-      break;
     case 'p':
     case 'P':
       // Defer save operation to draw loop (for OpenGL safety)
       pendingSave = true;
       pendingPrint = true;
-      loop();  // Ensure draw() is called
       break;
   }
   
@@ -664,70 +1028,14 @@ void keyPressed() {
     if (keyCode == UP) {
       scrollY -= 20;
       scrollY = constrain(scrollY, 0, max(0, maxScroll));
-      needsRedraw = true;
-      redraw();
     }
     if (keyCode == DOWN) {
       scrollY += 20;
       scrollY = constrain(scrollY, 0, max(0, maxScroll));
-      needsRedraw = true;
-      redraw();
     }
   }
 }
 
-void keyReleased() {
-  // Handle Space key release for zoom
-  if (key == ' ') {
-    spaceKeyPressed = false;
-    
-    if (isSelectingZoom && zoomSelectionStart.x >= 0) {
-      // Calculate zoom from selection
-      float x1 = min(zoomSelectionStart.x, zoomSelectionEnd.x);
-      float y1 = min(zoomSelectionStart.y, zoomSelectionEnd.y);
-      float x2 = max(zoomSelectionStart.x, zoomSelectionEnd.x);
-      float y2 = max(zoomSelectionStart.y, zoomSelectionEnd.y);
-      
-      float selWidth = x2 - x1;
-      float selHeight = y2 - y1;
-      
-      // Minimum selection size to zoom (20px)
-      if (selWidth > 20 && selHeight > 20) {
-        // Calculate zoom scale to fit selection to screen
-        float scaleX = CANVAS_WIDTH / selWidth;
-        float scaleY = SCREEN_HEIGHT / selHeight;
-        zoomScale = min(scaleX, scaleY);
-        
-        // Limit zoom scale to reasonable range (1.5x - 10x)
-        zoomScale = constrain(zoomScale, 1.5, 10.0);
-        
-        // Calculate offset to center the selection
-        float centerX = (x1 + x2) / 2;
-        float centerY = (y1 + y2) / 2;
-        
-        // Calculate offset so that zoomed area is centered
-        zoomOffsetX = CANVAS_WIDTH / 2 - centerX * zoomScale;
-        zoomOffsetY = SCREEN_HEIGHT / 2 - centerY * zoomScale;
-        
-        // Apply zoom
-        isZoomed = true;
-        isSelectingZoom = false;
-        needsRedraw = true;
-        redraw();
-      } else {
-        // Selection too small, cancel
-        isSelectingZoom = false;
-        needsRedraw = true;
-        redraw();
-      }
-    } else {
-      // No selection made, cancel
-      isSelectingZoom = false;
-      needsRedraw = true;
-      redraw();
-    }
-  }
-}
 
 // Get the maximum Y position with actual content
 float getMaxContentY() {
@@ -808,6 +1116,9 @@ void saveAndPrint(boolean printToReceipt) {
   // Also save timestamped copy
   String timestampedFilename = "glsl_paint_" + millis() + ".png";
   output.save(timestampedFilename);
+  
+  // Show save confirmation modal
+  showModal("SAVED: " + filename, 2000);
   
   // Print to thermal printer if requested
   if (printToReceipt) {
@@ -911,11 +1222,21 @@ class MidiReceiver implements Receiver {
           // Set pending brush size (thread-safe)
           pendingBrushSize = newBrushSize;
           
-          // Trigger redraw to update display
-          redraw();
-          
           // Visual feedback
           println("MIDI CC1: value=" + value + " → Brush size = " + (int)newBrushSize + "px");
+        }
+        
+        // Handle CC2 for color selection
+        if (ccNumber == 2) {
+          // Map MIDI value (0-127) to color index (0-3)
+          // 0-31: Black, 32-63: Green, 64-95: Yellow, 96-127: Light Gray
+          int newColorIndex = constrain(value / 32, 0, 3);
+          
+          // Set pending color index (thread-safe)
+          pendingColorIndex = newColorIndex;
+          
+          // Visual feedback
+          println("MIDI CC2: value=" + value + " → Color = " + colorNames[newColorIndex]);
         }
       }
     }
