@@ -39,28 +39,20 @@ void main() {
         vec2 imageCenter = u_mouse;
         float halfSize = u_imageSize * 0.5;
         
-        // Check if pixel is within image bounds
-        if (pixelPos.x >= imageCenter.x - halfSize && 
-            pixelPos.x <= imageCenter.x + halfSize &&
-            pixelPos.y >= imageCenter.y - halfSize && 
-            pixelPos.y <= imageCenter.y + halfSize) {
-            
-            // Calculate UV coordinates for the stamp image
-            vec2 stampUV = (pixelPos - (imageCenter - vec2(halfSize))) / u_imageSize;
-            
+        // Calculate UV coordinates for the stamp image
+        vec2 stampUV = (pixelPos - (imageCenter - vec2(halfSize))) / u_imageSize;
+        
+        // Only process pixels that are within the texture's UV range [0,1]
+        if (stampUV.x >= 0.0 && stampUV.x <= 1.0 && 
+            stampUV.y >= 0.0 && stampUV.y <= 1.0) {
             // Sample the stamp image
             vec4 stampColor = texture2D(u_stampImage, stampUV);
             
-            // Apply chroma key for blue (0, 0, 255)
-            float blueDiff = abs(stampColor.b - 1.0) + abs(stampColor.r) + abs(stampColor.g);
-            
-            // If not blue (chroma key), apply the stamp
-            if (blueDiff > 0.1) {
-                gl_FragColor = stampColor;
-            } else {
-                gl_FragColor = prevColor;
-            }
+            // Use the image's native alpha channel for transparency
+            // Alpha determines visibility - no rectangular boundary
+            gl_FragColor = mix(prevColor, stampColor, stampColor.a);
         } else {
+            // Outside texture bounds
             gl_FragColor = prevColor;
         }
     } else {

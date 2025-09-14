@@ -94,10 +94,18 @@ float lastKnownBrushSize = 2.0;  // Track last brush size to detect changes
 
 // Image pen variables
 PImage[] stampImages;
-String[] stampImageNames = {"smile.png"};
+String[] stampImageNames = {"smile.png", "kit.gif"};
 int currentImageIndex = 0;
 float imageStampSize = 32.0;  // Default 32px
 boolean modalShowImageSelect = false;  // Show image selection in modal
+
+// GIF animation support (manual frame cycling)
+PImage[][] gifFrames;  // Store multiple versions for animation effect
+int[] currentFrameIndex;  // Current frame for each image
+int[] totalFrames;  // Total number of frames for each image
+int frameUpdateInterval = 38;  // Update every 38ms (~26 fps, 1.3x faster than 20fps)
+int lastFrameUpdate = 0;
+boolean[] isAnimated;  // Track which images are animated
 
 void setup() {
   fullScreen(P3D);  // Fullscreen
@@ -151,12 +159,61 @@ void setup() {
   println("Canvas width: " + CANVAS_WIDTH + "px");
   println("On-demand GPU rendering enabled");
   println("Max chunks: " + MAX_CHUNKS);
-  // Load stamp images
+  // Load stamp images and handle GIF animation
   stampImages = new PImage[stampImageNames.length];
+  gifFrames = new PImage[stampImageNames.length][];
+  currentFrameIndex = new int[stampImageNames.length];
+  totalFrames = new int[stampImageNames.length];
+  isAnimated = new boolean[stampImageNames.length];
+  
   for (int i = 0; i < stampImageNames.length; i++) {
-    stampImages[i] = loadImage(stampImageNames[i]);
-    if (stampImages[i] != null) {
-      println("Loaded stamp image: " + stampImageNames[i] + " (" + stampImages[i].width + "x" + stampImages[i].height + ")");
+    String fileName = stampImageNames[i];
+    
+    if (fileName.equals("kit.gif")) {
+      // Load actual extracted frames for kit.gif
+      ArrayList<PImage> frameList = new ArrayList<PImage>();
+      int frameNum = 1;
+      
+      // Original: 400 frames at 50 fps = 8 seconds of animation
+      // Target: 20 fps playback = 8 seconds × 20 fps = 160 frames needed
+      // Sample rate: 400/160 = 2.5, so take every 2.5th frame (alternating 2 and 3)
+      boolean skipTwo = true;
+      while (frameNum <= 400) {
+        String framePath = String.format("kit_frames/kit_frame_%02d.png", frameNum);
+        PImage frame = loadImage(framePath);
+        if (frame != null) {
+          frameList.add(frame);
+        } else {
+          break;  // Stop if frame not found
+        }
+        // Alternate between skipping 2 and 3 frames to get 2.5 average
+        frameNum += skipTwo ? 2 : 3;
+        skipTwo = !skipTwo;
+      }
+      
+      if (frameList.size() > 0) {
+        gifFrames[i] = frameList.toArray(new PImage[frameList.size()]);
+        totalFrames[i] = gifFrames[i].length;
+        stampImages[i] = gifFrames[i][0];  // Start with first frame
+        isAnimated[i] = true;
+        currentFrameIndex[i] = 0;
+        println("Loaded animated GIF: " + fileName + " with " + totalFrames[i] + " frames at 20fps");
+      } else {
+        // Fallback to static image
+        stampImages[i] = loadImage(fileName);
+        isAnimated[i] = false;
+        totalFrames[i] = 1;
+        println("Failed to load frames, using static: " + fileName);
+      }
+    } else {
+      // Regular static image
+      stampImages[i] = loadImage(fileName);
+      if (stampImages[i] != null) {
+        ((PGraphicsOpenGL)g).textureSampling(2);  // Nearest neighbor
+        println("Loaded static image: " + fileName + " (" + stampImages[i].width + "x" + stampImages[i].height + ")");
+        isAnimated[i] = false;
+        totalFrames[i] = 1;
+      }
     }
   }
   
@@ -373,6 +430,9 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
 }
 
 void draw() {
+  // Update GIF animations
+  updateGifAnimations();
+  
   // Show startup screen if needed
   if (showStartupScreen) {
     drawStartupScreen();
@@ -775,9 +835,9 @@ void drawModal() {
       boxWidth = 100;  // Width for 3 pen mode icons
       boxHeight = 30;  // Height for icons
     } else if (modalShowImagePreview) {
-      // For image preview
-      boxWidth = 80;  // Fixed size for image preview
-      boxHeight = 80;  // Square for image
+      // For image preview - show all images like color picker
+      boxWidth = stampImageNames.length * 30 + 10;  // Width for all images
+      boxHeight = 40;  // Height for image boxes
     } else {
       float textWidth = lowResCanvas.textWidth(modalMessage);
       boxWidth = textWidth + padding * 2;
@@ -990,24 +1050,39 @@ void drawModal() {
         }
       }
     } else if (modalShowImagePreview) {
-      // Draw image preview with chroma key
-      if (stampImages != null && currentImageIndex < stampImages.length && stampImages[currentImageIndex] != null) {
-        PImage img = stampImages[currentImageIndex];
+      // Draw all image options like color picker
+      int boxSize = 24;  // Size for each image box
+      int boxSpacing = 30;
+      int startX = (int)(modalX + (boxWidth - (stampImageNames.length * boxSpacing - (boxSpacing - boxSize))) / 2);
+      
+      for (int i = 0; i < stampImageNames.length; i++) {
+        int boxX = startX + i * boxSpacing;
+        int boxY = (int)(modalY + boxHeight/2 - boxSize/2);
         
-        // Draw the image with chroma key in the center of the modal
-        float imageSize = min(boxWidth - 20, boxHeight - 20);  // Leave some padding
-        float imageX = modalX + boxWidth / 2;
-        float imageY = modalY + boxHeight / 2;
+        // Draw selection highlight with rainbow border
+        if (i == currentImageIndex) {
+          // Use the same rainbow color as the modal border
+          lowResCanvas.stroke(red(borderColor), green(borderColor), blue(borderColor), opacity);
+          lowResCanvas.strokeWeight(2);
+        } else {
+          lowResCanvas.stroke(128, opacity);  // Gray border for non-selected
+          lowResCanvas.strokeWeight(1);
+        }
         
-        // Draw with chroma key
-        drawImageWithChromaKey(lowResCanvas, img, imageX, imageY, imageSize, (int)opacity);
+        // White background for image
+        lowResCanvas.fill(255, opacity);
+        lowResCanvas.rect(boxX, boxY, boxSize, boxSize, 6, 6, 6, 6);
         
-        // Draw image name below
-        lowResCanvas.fill(0, opacity);
-        lowResCanvas.textAlign(CENTER, TOP);
-        lowResCanvas.textSize(8);
-        lowResCanvas.noStroke();
-        lowResCanvas.text(stampImageNames[currentImageIndex], modalX + boxWidth/2, modalY + boxHeight - 15);
+        // Draw the image preview
+        if (stampImages != null && i < stampImages.length && stampImages[i] != null) {
+          // Draw image with transparency
+          lowResCanvas.noSmooth();
+          lowResCanvas.tint(255, opacity);
+          lowResCanvas.imageMode(CENTER);
+          lowResCanvas.image(stampImages[i], boxX + boxSize/2, boxY + boxSize/2, boxSize - 4, boxSize - 4);
+          lowResCanvas.imageMode(CORNER);
+          lowResCanvas.noTint();
+        }
       }
     } else {
       // Draw text
@@ -1041,25 +1116,13 @@ void drawLowResUI() {
         lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
         lowResCanvas.scale(zoomScale);
         
-        // Draw image with chroma key manually
-        drawImageWithChromaKey(lowResCanvas, img, canvasX, canvasY, imageStampSize, 128);
-        
-        // Draw outline
-        lowResCanvas.noFill();
-        lowResCanvas.stroke(0, 128);
-        lowResCanvas.strokeWeight(1);
-        lowResCanvas.rect(canvasX - imageStampSize/2, canvasY - imageStampSize/2, imageStampSize, imageStampSize);
+        // Draw image with transparency
+        drawImageWithTransparency(lowResCanvas, img, canvasX, canvasY, imageStampSize, 128);
         
         lowResCanvas.popMatrix();
       } else if (!isSelectingZoom) {
-        // Normal image preview with chroma key
-        drawImageWithChromaKey(lowResCanvas, img, lowResMouseX, lowResMouseY, imageStampSize, 128);
-        
-        // Draw outline
-        lowResCanvas.noFill();
-        lowResCanvas.stroke(0, 128);
-        lowResCanvas.strokeWeight(1);
-        lowResCanvas.rect(lowResMouseX - imageStampSize/2, lowResMouseY - imageStampSize/2, imageStampSize, imageStampSize);
+        // Normal image preview with transparency
+        drawImageWithTransparency(lowResCanvas, img, lowResMouseX, lowResMouseY, imageStampSize, 128);
       }
     }
   } else {
@@ -1556,8 +1619,9 @@ class MidiReceiver implements Receiver {
         if (ccNumber == 2) {
           if (currentPenMode == PEN_MODE_IMAGE) {
             // In image mode, CC2 selects the image
-            // Currently we only have 1 image, but prepared for more
-            int newImageIndex = 0;  // Always smile.png for now
+            // Map MIDI value (0-127) to image index (0-1)
+            // 0-63: smile.png, 64-127: kit.gif
+            int newImageIndex = value < 64 ? 0 : 1;
             
             // Set pending image index (thread-safe)
             pendingImageIndex = newImageIndex;
@@ -1623,7 +1687,7 @@ void drawStartupScreen() {
   float centerX = width / 2;
   float centerY = height / 2;
   
-  // Draw smile.png with pulsing animation and chroma key
+  // Draw smile.png with pulsing animation and native transparency
   if (stampImages != null && stampImages.length > 0 && stampImages[0] != null) {
     PImage smileImg = stampImages[0];
     
@@ -1631,33 +1695,10 @@ void drawStartupScreen() {
     float scale = 3.0 + sin(startupAnimTime * 3) * 0.3;
     float imgSize = 128 * scale;
     
-    // Create chroma keyed version for display
-    PImage chromaKeyed = createImage(smileImg.width, smileImg.height, ARGB);
-    chromaKeyed.loadPixels();
-    smileImg.loadPixels();
-    
-    // Apply chroma key for blue (0, 0, 255)
-    for (int i = 0; i < smileImg.pixels.length; i++) {
-      color c = smileImg.pixels[i];
-      float r = red(c);
-      float g = green(c);
-      float b = blue(c);
-      
-      // Check if pixel is blue (with some tolerance)
-      float blueDiff = abs(b - 255) + abs(r - 0) + abs(g - 0);
-      
-      if (blueDiff < 30) {  // Blue pixel - make transparent
-        chromaKeyed.pixels[i] = color(0, 0, 0, 0);
-      } else {
-        // Non-blue pixel - keep it
-        chromaKeyed.pixels[i] = c;
-      }
-    }
-    chromaKeyed.updatePixels();
-    
-    // Draw the chroma keyed image
+    // Draw the image with its native transparency
     imageMode(CENTER);
-    image(chromaKeyed, centerX, centerY - 50, imgSize, imgSize);
+    noSmooth();  // Keep pixels sharp
+    image(smileImg, centerX, centerY - 50, imgSize, imgSize);
     imageMode(CORNER);
   }
   
@@ -1685,10 +1726,16 @@ void drawStartupScreen() {
   fill(0, blinkAlpha);  // Black text for white background
   text("Press ENTER to start", centerX, centerY + 220);
   
+  
   // Draw loaded image info
-  textSize(16);
+  textSize(14);
   fill(100);  // Medium gray
-  text("Loaded: smile.png", centerX, centerY + 260);
+  String loadedImages = "Images: ";
+  for (int i = 0; i < stampImageNames.length; i++) {
+    if (i > 0) loadedImages += ", ";
+    loadedImages += stampImageNames[i];
+  }
+  text(loadedImages, centerX, centerY + 280);
   
   // Draw version/info at bottom
   textAlign(CENTER, BOTTOM);
@@ -1699,36 +1746,32 @@ void drawStartupScreen() {
   textAlign(LEFT, TOP);  // Reset alignment
 }
 
-// Helper function to draw image with blue chroma key
-void drawImageWithChromaKey(PGraphics canvas, PImage img, float x, float y, float size, int alpha) {
-  // Create a temporary image for chroma keyed version
-  PImage chromaKeyed = createImage(img.width, img.height, ARGB);
-  chromaKeyed.loadPixels();
-  img.loadPixels();
+// Update animated GIF frames
+void updateGifAnimations() {
+  int currentTime = millis();
   
-  // Apply chroma key for blue (0, 0, 255)
-  for (int i = 0; i < img.pixels.length; i++) {
-    color c = img.pixels[i];
-    float r = red(c);
-    float g = green(c);
-    float b = blue(c);
-    
-    // Check if pixel is blue (with some tolerance)
-    float blueDiff = abs(b - 255) + abs(r - 0) + abs(g - 0);
-    
-    if (blueDiff < 30) {  // Blue pixel - make transparent
-      chromaKeyed.pixels[i] = color(0, 0, 0, 0);
-    } else {
-      // Non-blue pixel - keep with specified alpha
-      chromaKeyed.pixels[i] = color(r, g, b, alpha);
+  // Check if it's time to update frames
+  if (currentTime - lastFrameUpdate > frameUpdateInterval) {
+    for (int i = 0; i < stampImageNames.length; i++) {
+      if (isAnimated[i] && gifFrames[i] != null && totalFrames[i] > 0) {
+        // Advance to next frame
+        currentFrameIndex[i] = (currentFrameIndex[i] + 1) % totalFrames[i];
+        stampImages[i] = gifFrames[i][currentFrameIndex[i]];
+      }
     }
+    lastFrameUpdate = currentTime;
   }
-  chromaKeyed.updatePixels();
-  
-  // Draw the chroma keyed image
+}
+
+// Helper function to draw image with transparency
+void drawImageWithTransparency(PGraphics canvas, PImage img, float x, float y, float size, int alpha) {
+  // Draw the image with its native transparency
+  canvas.noSmooth();  // Disable interpolation for sharp pixels
+  canvas.tint(255, alpha);  // Apply alpha tint
   canvas.imageMode(CENTER);
-  canvas.image(chromaKeyed, x, y, size, size);
+  canvas.image(img, x, y, size, size);
   canvas.imageMode(CORNER);
+  canvas.noTint();  // Reset tint
 }
 
 // Clean up on exit
