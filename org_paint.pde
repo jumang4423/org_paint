@@ -11,6 +11,9 @@ ArrayList<PGraphics> chunkTextures;  // GPU textures
 ArrayList<PGraphics> chunkBuffers;   // Ping-pong buffers
 ArrayList<Integer> chunkPositions;
 
+// Line-based canvas for Vib-Ribbon style
+LineCanvas lineCanvas;
+
 // Canvas settings
 final int CANVAS_WIDTH = 576;
 final int CHUNK_HEIGHT = 256;  // Smaller chunks for better memory usage
@@ -90,6 +93,8 @@ volatile int pendingColorIndex = -1;  // Thread-safe variable for color selectio
 volatile int pendingPenMode = -1;  // Thread-safe variable for pen mode selection
 volatile int pendingImageIndex = -1;  // Thread-safe variable for image selection
 volatile float pendingImageSize = -1;  // Thread-safe variable for image size
+volatile float pendingAnimationSpeed = -1;  // Thread-safe variable for line animation speed
+volatile float pendingCloudDensity = -1;  // Thread-safe variable for cloud density
 int lastMidiCheck = 0;
 float lastKnownBrushSize = 2.0;  // Track last brush size to detect changes
 
@@ -138,6 +143,9 @@ void setup() {
   chunkTextures = new ArrayList<PGraphics>();
   chunkBuffers = new ArrayList<PGraphics>();
   chunkPositions = new ArrayList<Integer>();
+  
+  // Initialize line canvas
+  lineCanvas = new LineCanvas();
   
   // Initialize undo/redo arrays
   undoChunkTextures = new ArrayList<PGraphics>();
@@ -417,12 +425,7 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
     return;
   }
   
-  // If erasing, also erase animations with rectangle
-  if (currentPenMode == PEN_MODE_REMOVE && animatedPen != null) {
-    // Use a rectangle eraser for animations (20x20 px default)
-    float eraserSize = 20;
-    animatedPen.eraseAtRect(globalMouseX, globalMouseY, eraserSize, eraserSize, 0);
-  }
+  // Animation erasing is now handled in the main draw loop
   
   // Ping-pong: swap textures
   PGraphics currentTexture = chunkTextures.get(chunkIndex);
@@ -434,7 +437,9 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
     paintShader.set("u_mouse", globalMouseX, localMouseY);
     paintShader.set("u_prevMouse", globalPrevX < 0 ? -1.0 : globalPrevX, 
                                    globalPrevX < 0 ? -1.0 : localPrevY);
-    paintShader.set("u_brushSize", brushSize);
+    // Use much bigger brush size for eraser
+    float shaderBrushSize = isErasing ? brushSize * 5.0 : brushSize;
+    paintShader.set("u_brushSize", shaderBrushSize);
     paintShader.set("u_isErasing", isErasing ? 1.0 : 0.0);
     
     // Set image mode uniforms
@@ -482,7 +487,9 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
         bufferTexture.fill(currentColor);
       }
       
-      bufferTexture.strokeWeight(brushSize);
+      // Use much bigger brush size for eraser
+      float effectiveBrushSize = isErasing ? brushSize * 5.0 : brushSize;
+      bufferTexture.strokeWeight(effectiveBrushSize);
       bufferTexture.strokeCap(ROUND);
       
       // Draw line from previous position if available
@@ -491,7 +498,7 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
       }
       // Also draw a circle at current position
       bufferTexture.noStroke();
-      bufferTexture.ellipse(globalMouseX, localMouseY, brushSize, brushSize);
+      bufferTexture.ellipse(globalMouseX, localMouseY, effectiveBrushSize, effectiveBrushSize);
     }
     bufferTexture.endDraw();
   }
@@ -565,6 +572,34 @@ void draw() {
     showPenModeModal();
   }
   
+  if (pendingAnimationSpeed >= -3) {
+    if (pendingAnimationSpeed == -3) {
+      // Show cloud density modal
+      int densityPercent = (int)(pendingCloudDensity * 100);
+      showModal("CLOUD DENSITY: " + densityPercent + "%", 1000);
+      pendingAnimationSpeed = -1;
+      pendingCloudDensity = -1;
+    } else if (pendingAnimationSpeed == -2) {
+      // Show disabled modal
+      showModal("CC4: ✗ DISABLED", 1000);
+      pendingAnimationSpeed = -1;
+    } else if (pendingAnimationSpeed >= 0) {
+      if (lineCanvas != null) {
+        lineCanvas.setAnimationIntensity(pendingAnimationSpeed);
+      }
+      pendingAnimationSpeed = -1;
+      // Show modal with animation speed
+      int speedPercent = (int)(lineCanvas.animationIntensity * 100);
+      showModal("LINE ANIM: " + speedPercent + "%", 1000);
+    }
+  }
+  
+  // Update line canvas animation
+  if (lineCanvas != null) {
+    lineCanvas.update();
+    lineCanvas.scrollTo(scrollY);
+  }
+  
   // Calculate max scroll based on actual content
   float maxScroll = getMaxContentY() - SCREEN_HEIGHT;
   maxScroll = max(0, maxScroll);
@@ -572,10 +607,61 @@ void draw() {
   
   // OPTIMIZATION: Only process painting when actively drawing (and not selecting zoom)
   if ((isDrawing || isErasing) && !isSelectingZoom) {
-    // Handle animation pen differently - no shader drawing
+    // First handle special erasing for lines and animations if in REMOVE mode
+    if (currentPenMode == PEN_MODE_REMOVE) {
+      // Eraser mode - erase lines AND animations
+      // Transform mouse coordinates
+      float globalMouseX, globalMouseY;
+      
+      if (isZoomed) {
+        globalMouseX = (mouseX / displayScale - zoomOffsetX) / zoomScale;
+        globalMouseY = (mouseY / displayScale - zoomOffsetY) / zoomScale + scrollY;
+      } else {
+        globalMouseX = mouseX / displayScale;
+        globalMouseY = mouseY / displayScale + scrollY;
+      }
+      
+      // Erase lines at current position with much bigger radius
+      float eraserRadius = brushSize * 5;  // Make eraser much bigger
+      if (lineCanvas != null) {
+        lineCanvas.eraseAt(globalMouseX, globalMouseY, eraserRadius);
+      }
+      
+      // Also erase animations (cloud pen objects) with much bigger radius
+      if (animatedPen != null) {
+        // Use circle eraser for animations
+        animatedPen.eraseAt(globalMouseX, globalMouseY, eraserRadius, scrollY);
+      }
+      // Now continue to chunk processing below
+    }
+    
+    // Handle different pen modes for drawing/erasing
     if (currentPenMode == PEN_MODE_ANIMATION) {
       // Animation pen doesn't draw to buffer, just places animations
       // This is handled in mousePressed event
+    } else if (currentPenMode == PEN_MODE_DEFAULT && lineCanvas != null) {
+      // Line-based drawing for default pen mode
+      // Transform mouse coordinates
+      float globalMouseX, globalMouseY;
+      
+      if (isZoomed) {
+        globalMouseX = (mouseX / displayScale - zoomOffsetX) / zoomScale;
+        globalMouseY = (mouseY / displayScale - zoomOffsetY) / zoomScale + scrollY;
+      } else {
+        globalMouseX = mouseX / displayScale;
+        globalMouseY = mouseY / displayScale + scrollY;
+      }
+      
+      // Ensure chunk exists at this position
+      int chunkY = ((int)globalMouseY / CHUNK_HEIGHT) * CHUNK_HEIGHT;
+      createGPUChunk(chunkY);
+      
+      // Add point to line canvas
+      lineCanvas.addPoint(globalMouseX, globalMouseY);
+      lineCanvas.setColor(palette[currentColorIndex]);
+      lineCanvas.setWeight(brushSize);
+      
+      prevMouse.set(globalMouseX, globalMouseY);
     } else {
       // Capture undo state before first paint stroke
       if (captureUndoState) {
@@ -596,8 +682,9 @@ void draw() {
         globalMouseY = mouseY / displayScale + scrollY;
       }
       
-      // Find affected chunks (use image size for image mode)
-      float effectRadius = (currentPenMode == PEN_MODE_IMAGE) ? imageStampSize/2 : brushSize/2;
+      // Find affected chunks (use image size for image mode, much bigger radius for eraser)
+      float effectRadius = (currentPenMode == PEN_MODE_IMAGE) ? imageStampSize/2 : 
+                          (currentPenMode == PEN_MODE_REMOVE) ? brushSize * 3 : brushSize/2;
       int startChunk = (int)((globalMouseY - effectRadius) / CHUNK_HEIGHT) * CHUNK_HEIGHT;
       int endChunk = (int)((globalMouseY + effectRadius) / CHUNK_HEIGHT) * CHUNK_HEIGHT;
       
@@ -660,6 +747,11 @@ void draw() {
   
   if (isZoomed) {
     lowResCanvas.popMatrix();
+  }
+  
+  // Draw line canvas with Vib-Ribbon animation (after chunks)
+  if (lineCanvas != null) {
+    lineCanvas.draw(lowResCanvas, isZoomed, zoomScale, zoomOffsetX, zoomOffsetY);
   }
   
   // Draw animated pen animations (after chunks, before UI)
@@ -1242,19 +1334,36 @@ void drawModal() {
           lowResCanvas.strokeWeight(1);
           lowResCanvas.arc(iconX + iconSize/2, iconY + iconSize/2, 8, 8, 0.2, PI - 0.2);
         } else if (i == PEN_MODE_ANIMATION) {
-          // Draw animation icon (cloud/smoke)
-          lowResCanvas.fill(150, 150, 150, opacity);  // Gray cloud
-          // Draw three overlapping circles to form a cloud
-          lowResCanvas.noStroke();
-          lowResCanvas.ellipse(iconX + iconSize/2 - 3, iconY + iconSize/2 + 2, 8, 8);
-          lowResCanvas.ellipse(iconX + iconSize/2 + 3, iconY + iconSize/2 + 2, 8, 8);
-          lowResCanvas.ellipse(iconX + iconSize/2, iconY + iconSize/2 - 2, 9, 9);
-          // Add small upward arrow to indicate animation
+          // Draw animation icon (sparkles/stars)
           lowResCanvas.stroke(100, 100, 100, opacity);
+          lowResCanvas.strokeWeight(1.5);
+          lowResCanvas.noFill();
+          
+          // Draw three sparkle/star shapes
+          // Main star (larger)
+          float cx1 = iconX + iconSize/2;
+          float cy1 = iconY + iconSize/2;
+          float starSize = 4;
+          // Draw 4-point star/sparkle
+          lowResCanvas.line(cx1 - starSize, cy1, cx1 + starSize, cy1);
+          lowResCanvas.line(cx1, cy1 - starSize, cx1, cy1 + starSize);
           lowResCanvas.strokeWeight(1);
-          lowResCanvas.line(iconX + iconSize/2, iconY + 3, iconX + iconSize/2, iconY + 8);
-          lowResCanvas.line(iconX + iconSize/2, iconY + 3, iconX + iconSize/2 - 2, iconY + 5);
-          lowResCanvas.line(iconX + iconSize/2, iconY + 3, iconX + iconSize/2 + 2, iconY + 5);
+          lowResCanvas.line(cx1 - starSize*0.7, cy1 - starSize*0.7, cx1 + starSize*0.7, cy1 + starSize*0.7);
+          lowResCanvas.line(cx1 - starSize*0.7, cy1 + starSize*0.7, cx1 + starSize*0.7, cy1 - starSize*0.7);
+          
+          // Small star top-right
+          float cx2 = iconX + iconSize/2 + 5;
+          float cy2 = iconY + iconSize/2 - 3;
+          float smallSize = 2;
+          lowResCanvas.strokeWeight(1);
+          lowResCanvas.line(cx2 - smallSize, cy2, cx2 + smallSize, cy2);
+          lowResCanvas.line(cx2, cy2 - smallSize, cx2, cy2 + smallSize);
+          
+          // Small star bottom-left
+          float cx3 = iconX + iconSize/2 - 5;
+          float cy3 = iconY + iconSize/2 + 3;
+          lowResCanvas.line(cx3 - smallSize, cy3, cx3 + smallSize, cy3);
+          lowResCanvas.line(cx3, cy3 - smallSize, cx3, cy3 + smallSize);
         }
       }
     } else if (modalShowImagePreview) {
@@ -1450,14 +1559,18 @@ void drawLowResUI() {
       lowResCanvas.pushMatrix();
       lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
       lowResCanvas.scale(zoomScale);
-      lowResCanvas.ellipse(canvasX, canvasY, brushSize, brushSize);
+      // Show bigger preview circle for eraser
+      float previewSize = (currentPenMode == PEN_MODE_REMOVE) ? brushSize * 5.0 : brushSize;
+      lowResCanvas.ellipse(canvasX, canvasY, previewSize, previewSize);
       lowResCanvas.popMatrix();
     } else if (!isSelectingZoom) {
       // Normal brush preview
       lowResCanvas.noFill();
       lowResCanvas.stroke(brushColor);
       lowResCanvas.strokeWeight(1);  // Lighter weight
-      lowResCanvas.ellipse(lowResMouseX, lowResMouseY, brushSize, brushSize);
+      // Show bigger preview circle for eraser
+      float previewSize = (currentPenMode == PEN_MODE_REMOVE) ? brushSize * 5.0 : brushSize;
+      lowResCanvas.ellipse(lowResMouseX, lowResMouseY, previewSize, previewSize);
     }
   }
   
@@ -1535,12 +1648,36 @@ void mousePressed() {
       // Add new animation at this position with current size
       animatedPen.addAnimation(canvasX, canvasY, scrollY, animationSize);
       isDrawing = false; // Don't continue with normal drawing
-    } else {
-      // Normal drawing modes
+    } else if (currentPenMode == PEN_MODE_DEFAULT && lineCanvas != null) {
+      // Start a new line stroke for line-based drawing
+      float canvasX, canvasY;
+      if (isZoomed) {
+        canvasX = (mouseX / displayScale - zoomOffsetX) / zoomScale;
+        canvasY = (mouseY / displayScale - zoomOffsetY) / zoomScale + scrollY;
+      } else {
+        canvasX = mouseX / displayScale;
+        canvasY = mouseY / displayScale + scrollY;
+      }
+      
+      // Ensure chunk exists at this position
+      int chunkY = ((int)canvasY / CHUNK_HEIGHT) * CHUNK_HEIGHT;
+      createGPUChunk(chunkY);
+      
+      lineCanvas.startStroke(canvasX, canvasY);
+      lineCanvas.setColor(palette[currentColorIndex]);
+      lineCanvas.setWeight(brushSize);
+      isDrawing = true;
+      isErasing = false;  // DEFAULT mode is not erasing
+    } else if (currentPenMode == PEN_MODE_REMOVE) {
+      // REMOVE mode - set flags for chunk erasing
       captureUndoState = true;
       isDrawing = true;
-      // Set erasing based on pen mode
-      isErasing = (currentPenMode == PEN_MODE_REMOVE);
+      isErasing = true;  // This is critical for erasing from chunks
+    } else {
+      // Other drawing modes (IMAGE, etc)
+      captureUndoState = true;
+      isDrawing = true;
+      isErasing = false;
     }
   } else if (mouseButton == RIGHT) {
     // Right click does nothing now
@@ -1602,6 +1739,25 @@ void mouseReleased() {
     }
   } else {
     // Normal mouse release for painting
+    if (currentPenMode == PEN_MODE_DEFAULT && lineCanvas != null) {
+      // If we were drawing but didn't drag (single click), ensure we have at least one point
+      if (isDrawing && prevMouse.x >= 0 && prevMouse.y >= 0) {
+        // The point was already added in mousePressed, just end the stroke
+        lineCanvas.endStroke();
+      } else if (isDrawing) {
+        // Add a single point if we clicked without dragging
+        float canvasX, canvasY;
+        if (isZoomed) {
+          canvasX = (mouseX / displayScale - zoomOffsetX) / zoomScale;
+          canvasY = (mouseY / displayScale - zoomOffsetY) / zoomScale + scrollY;
+        } else {
+          canvasX = mouseX / displayScale;
+          canvasY = mouseY / displayScale + scrollY;
+        }
+        // The point should already be there from startStroke, just end it
+        lineCanvas.endStroke();
+      }
+    }
     isDrawing = false;
     isErasing = false;
     prevMouse.set(-1, -1);
@@ -1753,7 +1909,12 @@ float getMaxContentY() {
 
 void saveAndPrint(boolean printToReceipt) {
   println("=== SAVE AND PRINT ===");
-  if (chunkTextures.isEmpty()) {
+  
+  // Check if we have anything to save
+  boolean hasChunks = !chunkTextures.isEmpty();
+  boolean hasLines = (lineCanvas != null && !lineCanvas.lines.isEmpty());
+  
+  if (!hasChunks && !hasLines) {
     println("Nothing to save");
     return;
   }
@@ -1762,10 +1923,25 @@ void saveAndPrint(boolean printToReceipt) {
   int minY = Integer.MAX_VALUE;
   int maxY = Integer.MIN_VALUE;
   
-  for (int i = 0; i < chunkPositions.size(); i++) {
-    int chunkY = chunkPositions.get(i);
-    minY = min(minY, chunkY);
-    maxY = max(maxY, chunkY + CHUNK_HEIGHT);
+  // Check chunk bounds
+  if (hasChunks) {
+    for (int i = 0; i < chunkPositions.size(); i++) {
+      int chunkY = chunkPositions.get(i);
+      minY = min(minY, chunkY);
+      maxY = max(maxY, chunkY + CHUNK_HEIGHT);
+    }
+  }
+  
+  // Check line canvas bounds
+  if (hasLines) {
+    minY = min(minY, (int)lineCanvas.getMinY());
+    maxY = max(maxY, (int)lineCanvas.getMaxY());
+  }
+  
+  // Default to screen height if no content
+  if (minY == Integer.MAX_VALUE) {
+    minY = 0;
+    maxY = SCREEN_HEIGHT;
   }
   
   println("Saving from Y=" + minY + " to Y=" + maxY);
@@ -1802,6 +1978,13 @@ void saveAndPrint(boolean printToReceipt) {
           break;
         }
       }
+    }
+    
+    // Draw line canvas for this section
+    if (lineCanvas != null) {
+      lineCanvas.scrollTo(y);
+      lineCanvas.update(); // Update with scroll position
+      lineCanvas.draw(lowResCanvas, false, 1.0, 0, 0);
     }
     
     // Draw animations for this section
@@ -2028,6 +2211,51 @@ class MidiReceiver implements Receiver {
             
             // Visual feedback
             println("MIDI CC3: value=" + value + " → Brush size = " + (int)newBrushSize + "px");
+          }
+        }
+        
+        // Handle CC4 for animation control (line speed in DEFAULT, cloud density in ANIMATION)
+        if (ccNumber == 4) {
+          if (currentPenMode == PEN_MODE_DEFAULT) {
+            // Control line animation speed in DEFAULT mode
+            float newAnimSpeed = value / 127.0;  // 0 = stopped, 127 = full speed
+            newAnimSpeed = constrain(newAnimSpeed, 0, 1.0);
+            
+            // Set pending animation speed (thread-safe)
+            pendingAnimationSpeed = newAnimSpeed;
+            
+            // Visual feedback
+            int speedPercent = (int)(newAnimSpeed * 100);
+            println("MIDI CC4: value=" + value + " → Line animation speed = " + speedPercent + "%");
+          } else if (currentPenMode == PEN_MODE_ANIMATION) {
+            // Control cloud density in ANIMATION mode
+            float newCloudDensity = value / 127.0;  // 0 = minimal clouds, 127 = maximum clouds
+            newCloudDensity = constrain(newCloudDensity, 0, 1.0);
+            
+            // Set cloud density directly
+            if (animatedPen != null) {
+              animatedPen.setCloudDensity(newCloudDensity);
+            }
+            
+            // Show modal
+            pendingAnimationSpeed = -3;  // Special value for cloud density modal
+            pendingCloudDensity = newCloudDensity;  // Store for modal display
+            
+            // Visual feedback
+            int densityPercent = (int)(newCloudDensity * 100);
+            println("MIDI CC4: value=" + value + " → Cloud density = " + densityPercent + "%");
+          } else {
+            // Show disabled modal for REMOVE and IMAGE modes
+            pendingAnimationSpeed = -2;  // Special value to indicate disabled
+            
+            // Visual feedback
+            String modeName = "";
+            if (currentPenMode == PEN_MODE_REMOVE) {
+              modeName = "REMOVE";
+            } else if (currentPenMode == PEN_MODE_IMAGE) {
+              modeName = "IMAGE";
+            }
+            println("MIDI CC4: value=" + value + " → CC4 DISABLED in " + modeName + " mode");
           }
         }
       }

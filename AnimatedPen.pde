@@ -3,6 +3,7 @@ class AnimatedPen {
   ArrayList<AnimationInstance> animations;
   int currentAnimationType = 0; // 0 = cloud/smoke
   String[] animationTypeNames = {"CLOUD"};
+  float globalCloudDensity = 0.5; // Global cloud density for new animations (controlled by CC4)
   
   AnimatedPen() {
     animations = new ArrayList<AnimationInstance>();
@@ -14,7 +15,7 @@ class AnimatedPen {
     
     switch(currentAnimationType) {
       case 0: // Cloud/smoke animation
-        anim = new CloudAnimation(x, y + scrollY, size);
+        anim = new CloudAnimation(x, y + scrollY, size, globalCloudDensity);
         break;
       // Add more animation types here in the future
     }
@@ -22,6 +23,12 @@ class AnimatedPen {
     if (anim != null) {
       animations.add(anim);
     }
+  }
+  
+  // Set cloud density for new animations (doesn't affect existing ones)
+  void setCloudDensity(float density) {
+    globalCloudDensity = constrain(density, 0, 1.0);
+    // DO NOT update existing animations - they keep their creation-time density
   }
   
   // Update all animations
@@ -102,21 +109,41 @@ class CloudAnimation extends AnimationInstance {
   ArrayList<CloudParticle> particles;
   int particleSpawnInterval = 200; // Spawn new particle every 200ms
   int lastSpawn = 0;
-  int maxParticles = 10; // Maximum number of particles at once
+  int baseMaxParticles = 10; // Base maximum number of particles
+  float cloudDensity; // 0 = minimal clouds, 1.0 = maximum clouds (locked at creation time)
   
   CloudAnimation(float x, float y, float size) {
     super(x, y, size);
     particles = new ArrayList<CloudParticle>();
-    // Start with a few particles
-    for (int i = 0; i < 3; i++) {
+    cloudDensity = 0.5; // Default density
+    // Start with a few particles based on density
+    int initialParticles = max(1, (int)(3 * cloudDensity));
+    for (int i = 0; i < initialParticles; i++) {
+      particles.add(new CloudParticle(originX, originY, baseSize));
+    }
+  }
+  
+  CloudAnimation(float x, float y, float size, float density) {
+    super(x, y, size);
+    particles = new ArrayList<CloudParticle>();
+    cloudDensity = constrain(density, 0, 1.0);
+    // Start with a few particles based on density
+    int initialParticles = max(1, (int)(3 * cloudDensity));
+    for (int i = 0; i < initialParticles; i++) {
       particles.add(new CloudParticle(originX, originY, baseSize));
     }
   }
   
   void update() {
+    // Calculate dynamic max particles based on density
+    int maxParticles = max(2, (int)(baseMaxParticles * cloudDensity * 2)); // 0-20 particles based on density
+    
+    // Adjust spawn interval based on density (faster spawning with higher density)
+    int dynamicSpawnInterval = (int)(particleSpawnInterval / max(0.2, cloudDensity));
+    
     // Continuously spawn new particles
-    if (millis() - lastSpawn > particleSpawnInterval) {
-      // Always maintain some particles
+    if (millis() - lastSpawn > dynamicSpawnInterval) {
+      // Always maintain particles based on density
       if (particles.size() < maxParticles) {
         particles.add(new CloudParticle(originX, originY, baseSize));
       }
