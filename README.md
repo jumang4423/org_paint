@@ -1,5 +1,7 @@
 # ペイントアプリ
 
+![Screenshot](data/glsl_paint_539137.png)
+
 ## 起動方法
 `./run.sh` をダブルクリックして起動
 
