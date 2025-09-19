@@ -81,6 +81,78 @@ class AnimatedPen {
   void nextAnimationType() {
     currentAnimationType = (currentAnimationType + 1) % animationTypeNames.length;
   }
+  
+  // Save animations to file
+  void saveToFile(String filename) {
+    ArrayList<String> data = new ArrayList<String>();
+    
+    // Save header
+    data.add("ANIMATED_PEN_V1");
+    data.add("globalCloudDensity:" + globalCloudDensity);
+    data.add("animationCount:" + animations.size());
+    
+    // Save each animation
+    for (AnimationInstance anim : animations) {
+      String animData = "ANIMATION:";
+      
+      // Save type
+      if (anim instanceof CloudAnimation) {
+        CloudAnimation cloud = (CloudAnimation)anim;
+        animData += "CLOUD,";
+        animData += anim.originX + ",";
+        animData += anim.originY + ",";
+        animData += anim.baseSize + ",";
+        animData += cloud.cloudDensity;
+      }
+      // Add more animation types here in the future
+      
+      data.add(animData);
+    }
+    
+    saveStrings(filename, data.toArray(new String[0]));
+  }
+  
+  // Load animations from file
+  void loadFromFile(String filename) {
+    try {
+      String[] data = loadStrings(filename);
+      if (data == null || data.length == 0) return;
+      
+      // Clear existing animations
+      animations.clear();
+      
+      // Check header
+      if (!data[0].equals("ANIMATED_PEN_V1")) return;
+      
+      // Parse data
+      for (int i = 1; i < data.length; i++) {
+        String line = data[i];
+        
+        if (line.startsWith("globalCloudDensity:")) {
+          globalCloudDensity = Float.parseFloat(line.split(":")[1]);
+        } else if (line.startsWith("ANIMATION:")) {
+          // Parse animation
+          String[] parts = line.substring(10).split(",");
+          if (parts.length >= 1) {
+            String type = parts[0];
+            
+            if (type.equals("CLOUD") && parts.length >= 5) {
+              float x = Float.parseFloat(parts[1]);
+              float y = Float.parseFloat(parts[2]);
+              float size = Float.parseFloat(parts[3]);
+              float density = Float.parseFloat(parts[4]);
+              
+              CloudAnimation cloud = new CloudAnimation(x, y, size, density);
+              animations.add(cloud);
+            }
+            // Add more animation types here in the future
+          }
+        }
+      }
+    } catch (Exception e) {
+      println("Error loading animated pen: " + e.getMessage());
+    }
+  }
 }
 
 // Base class for all animation instances

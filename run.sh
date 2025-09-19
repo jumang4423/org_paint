@@ -35,6 +35,33 @@ if [ $? -ne 0 ]; then
     fi
 fi
 
+# Check and install The MidiBus library if needed
+echo "Checking The MidiBus library..."
+if [ ! -d ~/Documents/Processing/libraries/themidibus ]; then
+    echo "⚠️  The MidiBus library not found"
+    echo "Installing The MidiBus library..."
+    
+    # Create libraries directory if it doesn't exist
+    mkdir -p ~/Documents/Processing/libraries
+    
+    # Download The MidiBus library
+    cd ~/Documents/Processing/libraries
+    git clone https://github.com/sparks/themidibus.git 2>/dev/null
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ The MidiBus library installed successfully!"
+    else
+        echo "⚠️  Failed to install The MidiBus library automatically"
+        echo "Please install manually from Processing IDE:"
+        echo "  Sketch → Import Library → Manage Libraries → Search 'The MidiBus'"
+    fi
+    
+    # Return to original directory
+    cd - > /dev/null
+else
+    echo "✅ The MidiBus library is already installed"
+fi
+
 # Check if sketch exists
 if [ ! -f "org_paint.pde" ]; then
     echo "❌ Error: org_paint.pde not found"
@@ -44,15 +71,6 @@ fi
 
 echo ""
 echo "✅ All checks passed!"
-echo ""
-echo "Controls:"
-echo "  • Left click: Draw"
-echo "  • Right click: Erase"
-echo "  • Mouse wheel: Scroll (0.7x sensitivity)"
-echo "  • Arrow keys: Scroll (20px)"
-echo "  • Q/A: Increase/Decrease brush size"
-echo "  • P: Save and Print to thermal printer"
-echo ""
 echo "Starting GLSL Paint App..."
 echo "========================================="
 echo ""

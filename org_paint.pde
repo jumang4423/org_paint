@@ -27,6 +27,9 @@ float brushSize = 2.0;  // Default 2px
 float scrollY = 0;
 boolean pendingSave = false;  // Flag for deferred save operation
 boolean pendingPrint = false;  // Flag for print after save
+// Export state (to avoid drawing from key events)
+boolean pendingExportDialog = false;  // Flag to trigger export (Cmd+S) in draw()
+PImage cachedExportImage = null;      // Image rendered on draw() thread for callback to save
 boolean showDebugInfo = false;  // Toggle debug info with Tab key
 
 // Pen modes
@@ -82,7 +85,7 @@ int rainbowUpdateCounter = 0;
 float displayScale = 1.0;
 
 // Startup screen
-boolean showStartupScreen = true;
+boolean showStartupScreen = true;  // Show startup screen
 float startupAnimTime = 0;
 
 // MIDI
@@ -138,6 +141,7 @@ void setup() {
   // Create rainbow buffer for background pattern
   rainbowBuffer = createGraphics(CANVAS_WIDTH, SCREEN_HEIGHT, P3D);
   rainbowBuffer.noSmooth();
+  
   
   // Initialize GPU texture arrays
   chunkTextures = new ArrayList<PGraphics>();
@@ -380,6 +384,7 @@ void createGPUChunk(int yPos) {
   texture.noStroke();
   texture.rect(0, 0, CANVAS_WIDTH, CHUNK_HEIGHT);  // Draw white rect to ensure coverage
   texture.endDraw();
+  texture.flush();  // Ensure GPU sync
   
   buffer.beginDraw();
   buffer.background(255, 255, 255);  // Explicit white
@@ -387,6 +392,7 @@ void createGPUChunk(int yPos) {
   buffer.noStroke();
   buffer.rect(0, 0, CANVAS_WIDTH, CHUNK_HEIGHT);  // Draw white rect to ensure coverage
   buffer.endDraw();
+  buffer.flush();  // Ensure GPU sync
   
   chunkTextures.add(texture);
   chunkBuffers.add(buffer);
@@ -523,14 +529,6 @@ void draw() {
     return;
   }
   
-  // Check for pending save operation (must be done in draw loop for OpenGL)
-  if (pendingSave) {
-    saveAndPrint(pendingPrint);
-    pendingSave = false;
-    pendingPrint = false;
-    return;  // Don't do other drawing this frame
-  }
-  
   // Check for pending undo/redo operations (must be done in draw loop for OpenGL)
   if (pendingUndo) {
     performUndo();
@@ -658,7 +656,12 @@ void draw() {
       
       // Add point to line canvas
       lineCanvas.addPoint(globalMouseX, globalMouseY);
-      lineCanvas.setColor(palette[currentColorIndex]);
+      // If rainbow color selected, mark current stroke as rainbow so it animates colors dynamically
+      if (currentColorIndex == 4) {
+        lineCanvas.setColorAndRainbow(palette[currentColorIndex], true);
+      } else {
+        lineCanvas.setColorAndRainbow(palette[currentColorIndex], false);
+      }
       lineCanvas.setWeight(brushSize);
       
       prevMouse.set(globalMouseX, globalMouseY);
@@ -1609,6 +1612,33 @@ void drawLowResUI() {
   
   // Draw modal on top of everything
   drawModal();
+  
+  // Check for pending save operation AFTER all drawing is complete
+  if (pendingSave) {
+    // Use a try-catch to handle any OpenGL issues
+    try {
+      saveAndPrint(pendingPrint);
+    } catch (Exception e) {
+      println("Error during save: " + e.getMessage());
+      showModal("SAVE ERROR", 2000);
+    }
+    pendingSave = false;
+    pendingPrint = false;
+  }
+
+  // Handle deferred export dialog (Cmd+S) after drawing completes
+  if (pendingExportDialog) {
+    try {
+      // Render full canvas image on the draw thread and cache it
+      cachedExportImage = renderFullCanvasToImage();
+      // Open file dialog for saving
+      selectOutput("Save as PNG:", "saveCanvasCallback", dataFile("canvas_" + year() + month() + day() + "_" + hour() + minute() + second() + ".png"));
+    } catch (Exception e) {
+      println("Error preparing export: " + e.getMessage());
+      showModal("EXPORT ERROR", 2000);
+    }
+    pendingExportDialog = false;
+  }
 }
 
 void mousePressed() {
@@ -1640,11 +1670,6 @@ void mousePressed() {
         canvasY = mouseY / displayScale;
       }
       
-      // Ensure chunk exists at this position (animation needs a chunk to render on)
-      float globalY = canvasY + scrollY;
-      int chunkY = ((int)globalY / CHUNK_HEIGHT) * CHUNK_HEIGHT;
-      createGPUChunk(chunkY);
-      
       // Add new animation at this position with current size
       animatedPen.addAnimation(canvasX, canvasY, scrollY, animationSize);
       isDrawing = false; // Don't continue with normal drawing
@@ -1659,12 +1684,12 @@ void mousePressed() {
         canvasY = mouseY / displayScale + scrollY;
       }
       
-      // Ensure chunk exists at this position
-      int chunkY = ((int)canvasY / CHUNK_HEIGHT) * CHUNK_HEIGHT;
-      createGPUChunk(chunkY);
-      
       lineCanvas.startStroke(canvasX, canvasY);
-      lineCanvas.setColor(palette[currentColorIndex]);
+      if (currentColorIndex == 4) {
+        lineCanvas.setColorAndRainbow(palette[currentColorIndex], true);
+      } else {
+        lineCanvas.setColorAndRainbow(palette[currentColorIndex], false);
+      }
       lineCanvas.setWeight(brushSize);
       isDrawing = true;
       isErasing = false;  // DEFAULT mode is not erasing
@@ -1828,7 +1853,11 @@ void keyPressed() {
   boolean cmdPressed = isMac ? (keyEvent.isMetaDown()) : (keyEvent.isControlDown());
   
   if (cmdPressed) {
-    if (key == 'z' || key == 'Z') {
+    if (key == 's' || key == 'S') {
+      // Cmd+S - Defer export to draw thread
+      pendingExportDialog = true;
+      return;
+    } else if (key == 'z' || key == 'Z') {
       if (keyEvent.isShiftDown()) {
         // Cmd+Shift+Z - Redo (deferred to draw loop)
         pendingRedo = true;
@@ -2032,6 +2061,73 @@ void saveAndPrint(boolean printToReceipt) {
   if (printToReceipt) {
     printToThermalPrinter(filename);
   }
+}
+
+// Render the entire canvas (chunks + lines + animations) into a single PImage safely from draw()
+PImage renderFullCanvasToImage() {
+  int minY = 0;
+  int maxY = (int)getMaxContentY();
+  if (maxY <= minY) {
+    return null;
+  }
+
+  PImage finalImage = createImage(CANVAS_WIDTH, maxY - minY, RGB);
+  finalImage.loadPixels();
+
+  float savedScrollY = scrollY;
+
+  for (int y = minY; y < maxY; y += SCREEN_HEIGHT) {
+    // Render this section directly to lowResCanvas
+    lowResCanvas.beginDraw();
+    lowResCanvas.background(255);
+
+    int startChunkY = max(0, (int)(y / CHUNK_HEIGHT) * CHUNK_HEIGHT);
+    int endChunkY = (int)((y + SCREEN_HEIGHT) / CHUNK_HEIGHT + 1) * CHUNK_HEIGHT;
+
+    // Render visible chunks
+    for (int chunkY = startChunkY; chunkY <= endChunkY; chunkY += CHUNK_HEIGHT) {
+      for (int i = 0; i < chunkPositions.size(); i++) {
+        if (chunkPositions.get(i) == chunkY) {
+          PGraphics chunk = chunkTextures.get(i);
+          float renderY = chunkY - y;
+          lowResCanvas.image(chunk, 0, renderY);
+          break;
+        }
+      }
+    }
+
+    // Draw line canvas for this section
+    if (lineCanvas != null) {
+      lineCanvas.scrollTo(y);
+      lineCanvas.update();
+      lineCanvas.draw(lowResCanvas, false, 1.0, 0, 0);
+    }
+
+    // Draw animations for this section
+    if (animatedPen != null) {
+      animatedPen.draw(lowResCanvas, y, false, 1.0, 0, 0);
+    }
+
+    lowResCanvas.endDraw();
+
+    int sectionHeight = min(SCREEN_HEIGHT, maxY - y);
+    PImage section = lowResCanvas.get(0, 0, CANVAS_WIDTH, sectionHeight);
+
+    section.loadPixels();
+    for (int py = 0; py < section.height; py++) {
+      for (int px = 0; px < section.width; px++) {
+        int srcIdx = py * section.width + px;
+        int dstIdx = (y - minY + py) * CANVAS_WIDTH + px;
+        if (dstIdx < finalImage.pixels.length && srcIdx < section.pixels.length) {
+          finalImage.pixels[dstIdx] = section.pixels[srcIdx];
+        }
+      }
+    }
+  }
+
+  finalImage.updatePixels();
+  scrollY = savedScrollY;
+  return finalImage;
 }
 
 void printToThermalPrinter(String filename) {
@@ -2269,73 +2365,143 @@ class MidiReceiver implements Receiver {
 
 // Draw startup screen
 void drawStartupScreen() {
-  // Update animation time
-  startupAnimTime += 0.016;  // ~60fps
-  
-  // Clear to white background
+  // Update animation time (for subtle blink)
+  startupAnimTime += 0.016;
+
+  // White background
   background(255);
-  
-  // Calculate center position
-  float centerX = width / 2;
-  float centerY = height / 2;
-  
-  // Draw smile.png with pulsing animation and native transparency
+
+  // Split screen into two equal halves
+  float leftPanelWidth = width * 0.5;
+  float rightPanelStart = leftPanelWidth;
+  float rightPanelWidth = width - leftPanelWidth; // also 0.5 * width
+  float centerY = height * 0.5;
+
+  // Divider line between halves
+  stroke(200);
+  strokeWeight(1);
+  line(leftPanelWidth, 0, leftPanelWidth, height);
+
+  // === LEFT HALF: smile.png + "Press ENTER to start" (centered as a group) ===
+  float maxImg = min(leftPanelWidth, height) * 0.48; // a bit smaller to fit text
+  float imgW = maxImg;
+  float imgH = maxImg;
+
+  // Compute text size and height
+  float txtSize = max(18, min(width, height) * 0.04);
+  textSize(txtSize);
+  float textH = textAscent() + textDescent();
+  float gap = 24; // space between image and text
+
+  // Total group height for vertical centering
+  float groupH = imgH + gap + textH;
+  float groupTopY = centerY - groupH * 0.5;
+
+  // Draw image centered in left half
   if (stampImages != null && stampImages.length > 0 && stampImages[0] != null) {
-    PImage smileImg = stampImages[0];
-    
-    // Pulsing scale effect
-    float scale = 3.0 + sin(startupAnimTime * 3) * 0.3;
-    float imgSize = 128 * scale;
-    
-    // Draw the image with its native transparency
     imageMode(CENTER);
-    noSmooth();  // Keep pixels sharp
-    image(smileImg, centerX, centerY - 50, imgSize, imgSize);
+    noSmooth();
+    image(stampImages[0], leftPanelWidth * 0.5, groupTopY + imgH * 0.5, imgW, imgH);
     imageMode(CORNER);
   }
-  
-  // Draw title text with rainbow effect
+
+  // Draw ENTER prompt centered under the image (with gentle blink)
   textAlign(CENTER, CENTER);
-  textSize(48);
-  
-  // Rainbow color animation
-  float rainbowTime = startupAnimTime * 2;
-  fill(
-    (sin(rainbowTime) * 0.5 + 0.5) * 255,
-    (sin(rainbowTime + 2.094) * 0.5 + 0.5) * 255,
-    (sin(rainbowTime + 4.189) * 0.5 + 0.5) * 255
-  );
-  text("GLSL PAINT", centerX, centerY + 120);
-  
-  // Draw subtitle
-  textSize(24);
-  fill(80);  // Darker gray for white background
-  text("Thermal Printer Edition", centerX, centerY + 160);
-  
-  // Draw "Press ENTER to start" with blinking effect
-  textSize(20);
   float blinkAlpha = (sin(startupAnimTime * 4) * 0.5 + 0.5) * 255;
-  fill(0, blinkAlpha);  // Black text for white background
-  text("Press ENTER to start", centerX, centerY + 220);
-  
-  
-  // Draw loaded image info
-  textSize(14);
-  fill(100);  // Medium gray
-  String loadedImages = "Images: ";
-  for (int i = 0; i < stampImageNames.length; i++) {
-    if (i > 0) loadedImages += ", ";
-    loadedImages += stampImageNames[i];
+  fill(0, blinkAlpha);
+  text("Press ENTER to start", leftPanelWidth * 0.5, groupTopY + imgH + gap + textH * 0.5);
+
+  // === RIGHT HALF: Controls & Features (centered block) ===
+  float rightCenterX = rightPanelStart + rightPanelWidth * 0.5;
+  float lineHeight = 22;
+  float sectionSpacing = 35;
+
+  // Measure total content height for vertical centering
+  int drawingLines = 6; // list items in DRAWING section
+  int systemLines = 5;  // list items in SYSTEM section
+  int midiLines = midiConnected ? 4 : 0;
+  int canvasInfoLines = 3; // Width/Height/Chunk
+  boolean hasStampsInfo = (stampImages != null && stampImageNames != null && stampImageNames.length > 0);
+  int extraInfoLines = (hasStampsInfo ? 1 : 0) + 1; // Stamps + MIDI status
+
+  float totalH = 0;
+  totalH += 40; // Title block
+  totalH += lineHeight /* DRAWING header */ + drawingLines * lineHeight + sectionSpacing;
+  totalH += lineHeight /* SYSTEM header */ + systemLines * lineHeight + sectionSpacing;
+  if (midiConnected) {
+    totalH += lineHeight /* MIDI header */ + midiLines * lineHeight + sectionSpacing;
   }
-  text(loadedImages, centerX, centerY + 280);
-  
-  // Draw version/info at bottom
-  textAlign(CENTER, BOTTOM);
-  textSize(12);
-  fill(120);  // Darker for visibility on white
-  text("Canvas: " + CANVAS_WIDTH + "px | MIDI: " + (midiConnected ? "Connected" : "Not Connected"), centerX, height - 10);
-  
-  textAlign(LEFT, TOP);  // Reset alignment
+  totalH += lineHeight /* CANVAS INFO header */ + (canvasInfoLines + extraInfoLines) * lineHeight;
+
+  float currentY = centerY - totalH * 0.5;
+
+  // Title
+  textSize(24);
+  fill(0);
+  textAlign(CENTER, TOP);
+  text("CONTROLS & FEATURES", rightCenterX, currentY);
+  currentY += 40;
+
+  // DRAWING
+  textSize(16);
+  fill(0);
+  text("DRAWING", rightCenterX, currentY);
+  currentY += lineHeight;
+
+  textSize(13);
+  fill(60);
+  text("Left Click — Draw / Stamp / Animate", rightCenterX, currentY); currentY += lineHeight;
+  text("Right Click — No action", rightCenterX, currentY); currentY += lineHeight;
+  text("Mouse Wheel — Scroll Canvas", rightCenterX, currentY); currentY += lineHeight;
+  text("Arrow Keys — Scroll Canvas", rightCenterX, currentY); currentY += lineHeight;
+  text("Space — Zoom Mode", rightCenterX, currentY); currentY += lineHeight;
+  text("Tab (hold) — Debug Info", rightCenterX, currentY); currentY += sectionSpacing;
+
+  // SYSTEM
+  textSize(16);
+  fill(0);
+  text("SYSTEM", rightCenterX, currentY);
+  currentY += lineHeight;
+
+  textSize(13);
+  fill(60);
+  text("Cmd + S — Export PNG", rightCenterX, currentY); currentY += lineHeight;
+  text("Cmd + Z — Undo", rightCenterX, currentY); currentY += lineHeight;
+  text("Cmd + Shift + Z — Redo", rightCenterX, currentY); currentY += lineHeight;
+  text("P — Save & Print", rightCenterX, currentY); currentY += lineHeight;
+  text("ESC — Exit Application", rightCenterX, currentY); currentY += sectionSpacing;
+
+  // MIDI (conditional)
+  if (midiConnected) {
+    textSize(16);
+    fill(0);
+    text("MIDI CONTROLS", rightCenterX, currentY);
+    currentY += lineHeight;
+
+    textSize(13);
+    fill(60);
+    text("CC1 — Pen Mode", rightCenterX, currentY); currentY += lineHeight;
+    text("CC2 — Color / Image / Anim Type", rightCenterX, currentY); currentY += lineHeight;
+    text("CC3 — Brush / Image / Anim Size", rightCenterX, currentY); currentY += lineHeight;
+    text("CC4 — Line Speed / Cloud Density", rightCenterX, currentY); currentY += sectionSpacing;
+  }
+
+  // CANVAS INFO
+  textSize(16);
+  fill(0);
+  text("CANVAS INFO", rightCenterX, currentY);
+  currentY += lineHeight;
+
+  textSize(13);
+  fill(60);
+  text("Width — " + CANVAS_WIDTH + " px", rightCenterX, currentY); currentY += lineHeight;
+  text("Height — Infinite scroll", rightCenterX, currentY); currentY += lineHeight;
+  text("Chunk Size — " + CHUNK_HEIGHT + " px", rightCenterX, currentY); currentY += lineHeight;
+  if (hasStampsInfo) { text("Stamps — " + stampImageNames.length + " loaded", rightCenterX, currentY); currentY += lineHeight; }
+  text("MIDI — " + (midiConnected ? "Connected" : "Not Connected"), rightCenterX, currentY);
+
+  // Reset alignment
+  textAlign(LEFT, TOP);
 }
 
 // Update animated GIF frames
@@ -2380,3 +2546,56 @@ void exit() {
   // Call parent exit
   super.exit();
 }
+
+// Export canvas as PNG with file dialog
+void exportPNGWithDialog() {
+  // Request export via draw() thread
+  pendingExportDialog = true;
+}
+
+// Callback for file save dialog
+void saveCanvasCallback(File selection) {
+  if (selection == null) {
+    showModal("EXPORT CANCELLED", 1000);
+    // Clear any previously cached export image
+    cachedExportImage = null;
+    return;
+  }
+  
+  // Ensure filename ends with .png
+  String filename = selection.getAbsolutePath();
+  if (!filename.toLowerCase().endsWith(".png")) {
+    filename += ".png";
+  }
+  
+  // Save the cached image produced on the draw thread
+  if (cachedExportImage == null) {
+    // Fallback: try rendering now (may be less safe but better than failing silently)
+    cachedExportImage = renderFullCanvasToImage();
+  }
+  if (cachedExportImage != null) {
+    cachedExportImage.save(filename);
+  } else {
+    showModal("NO CONTENT TO SAVE", 1500);
+    return;
+  }
+  // Clear cache now that we've saved it
+  cachedExportImage = null;
+  
+  // Get just the filename for display
+  String displayName = new File(filename).getName();
+  showModal("EXPORTED: " + displayName, 2000);
+  println("Exported canvas to: " + filename);
+}
+
+// Removed all slot-related functions - now using simple PNG export
+
+/* OLD SLOT FUNCTIONS REMOVED:
+ * checkSaveSlots()
+ * drawSlotSelectionScreen() 
+ * updateSlotHover()
+ * handleSlotClick()
+ * deleteSlotData()
+ * saveToSlot()
+ * loadFromSlot()
+ */

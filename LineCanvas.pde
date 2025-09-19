@@ -121,11 +121,18 @@ class LineCanvas {
   
   // Set line color
   void setColor(color c) {
+    // Backwards-compatible: default to non-rainbow
+    setColorAndRainbow(c, false);
+  }
+
+  // Set line color and whether it should animate as rainbow
+  void setColorAndRainbow(color c, boolean isRainbow) {
     lineColor = c;
     // Apply to current line if exists
     if (!lines.isEmpty()) {
       LineSegment currentLine = lines.get(lines.size() - 1);
       currentLine.strokeColor = c;
+      currentLine.isRainbow = isRainbow;
     }
   }
   
@@ -176,6 +183,86 @@ class LineCanvas {
     }
     return minY == Float.MAX_VALUE ? 0 : minY;
   }
+  
+  // Save line data to file
+  void saveToFile(String filename) {
+    ArrayList<String> data = new ArrayList<String>();
+    
+    // Save header info
+    data.add("LINE_CANVAS_V1");
+    data.add("animationIntensity:" + animationIntensity);
+    data.add("lineCount:" + lines.size());
+    
+    // Save each line segment
+    for (LineSegment line : lines) {
+      String lineData = "LINE:";
+      lineData += line.strokeColor + ",";
+      lineData += line.strokeWeight + ",";
+      lineData += line.animationIntensity + ",";
+      lineData += line.points.size() + ",";
+      
+      // Save points
+      for (PVector p : line.points) {
+        lineData += p.x + "," + p.y + ",";
+      }
+      
+      data.add(lineData);
+    }
+    
+    // Save to file
+    saveStrings(filename, data.toArray(new String[0]));
+  }
+  
+  // Load line data from file
+  void loadFromFile(String filename) {
+    try {
+      String[] data = loadStrings(filename);
+      if (data == null || data.length == 0) return;
+      
+      // Clear existing lines
+      lines.clear();
+      activeLines.clear();
+      
+      // Check header
+      if (!data[0].equals("LINE_CANVAS_V1")) return;
+      
+      // Parse data
+      for (int i = 1; i < data.length; i++) {
+        String line = data[i];
+        
+        if (line.startsWith("animationIntensity:")) {
+          animationIntensity = Float.parseFloat(line.split(":")[1]);
+        } else if (line.startsWith("LINE:")) {
+          // Parse line segment
+          String[] parts = line.substring(5).split(",");
+          if (parts.length >= 4) {
+            int col = Integer.parseInt(parts[0]);
+            float weight = Float.parseFloat(parts[1]);
+            float animIntensity = Float.parseFloat(parts[2]);
+            int pointCount = Integer.parseInt(parts[3]);
+            
+            if (parts.length >= 4 + pointCount * 2) {
+              // Create line segment
+              float firstX = Float.parseFloat(parts[4]);
+              float firstY = Float.parseFloat(parts[5]);
+              LineSegment segment = new LineSegment(firstX, firstY, col, weight, animIntensity);
+              
+              // Add remaining points
+              for (int j = 1; j < pointCount; j++) {
+                float x = Float.parseFloat(parts[4 + j * 2]);
+                float y = Float.parseFloat(parts[4 + j * 2 + 1]);
+                segment.addPoint(x, y);
+              }
+              
+              lines.add(segment);
+            }
+          }
+        }
+      }
+    } catch (Exception e) {
+      println("Error loading line canvas: " + e.getMessage());
+    }
+  }
 }
 
 // Individual line segment (a continuous stroke)
@@ -190,6 +277,7 @@ class LineSegment {
   float directionY;  // Random Y direction multiplier
   float animationIntensity; // Store the intensity when this line was created
   float lineWaveTime; // Per-line animation time
+  boolean isRainbow = false; // If true, color cycles over time
   
   LineSegment(float x, float y) {
     points = new ArrayList<PVector>();
@@ -358,7 +446,17 @@ class LineSegment {
         offsetY = cos(phase * 1.3 + randomSeed * 0.7) * amplitude * directionY * animationIntensity;
       }
       
-      canvas.stroke(strokeColor);
+      // Set dynamic rainbow stroke color if enabled
+      if (isRainbow) {
+        // Cycle hue over time; offset by randomSeed so lines differ
+        float h = (lineWaveTime * 0.2 + (randomSeed * 0.137)) % 1.0; // 0..1
+        if (h < 0) h += 1.0;
+        canvas.colorMode(HSB, 1.0);
+        canvas.stroke(h, 1.0, 1.0);
+        canvas.colorMode(RGB, 255);
+      } else {
+        canvas.stroke(strokeColor);
+      }
       canvas.strokeWeight(strokeWeight * 2); // Make dots more visible
       canvas.point(p.x + offsetX, p.y - viewportY + offsetY);
       return;
@@ -366,7 +464,16 @@ class LineSegment {
     
     if (points.size() < 2) return;
     
-    canvas.stroke(strokeColor);
+    // Set stroke color (dynamic if rainbow)
+    if (isRainbow) {
+      float h = (lineWaveTime * 0.2 + (randomSeed * 0.137)) % 1.0;
+      if (h < 0) h += 1.0;
+      canvas.colorMode(HSB, 1.0);
+      canvas.stroke(h, 1.0, 1.0);
+      canvas.colorMode(RGB, 255);
+    } else {
+      canvas.stroke(strokeColor);
+    }
     canvas.strokeWeight(strokeWeight);
     canvas.beginShape();
     
