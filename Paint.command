@@ -3,6 +3,9 @@
 # GLSL Paint App Launcher
 # For thermal printer output (576px width)
 
+# Change to the directory where this script is located
+cd "$(dirname "$0")"
+
 echo "========================================="
 echo "     GLSL Paint - Thermal Printer"
 echo "========================================="
@@ -12,6 +15,9 @@ echo ""
 if ! command -v processing-java &> /dev/null; then
     echo "❌ Error: Processing is not installed or not in PATH"
     echo "Please install Processing from https://processing.org"
+    echo ""
+    echo "Press any key to close..."
+    read -n 1
     exit 1
 fi
 
@@ -19,6 +25,9 @@ fi
 if ! command -v python3 &> /dev/null; then
     echo "❌ Error: Python3 is not installed"
     echo "Please install Python3"
+    echo ""
+    echo "Press any key to close..."
+    read -n 1
     exit 1
 fi
 
@@ -66,6 +75,9 @@ fi
 if [ ! -f "org_paint.pde" ]; then
     echo "❌ Error: org_paint.pde not found"
     echo "Please run this script from the project directory"
+    echo ""
+    echo "Press any key to close..."
+    read -n 1
     exit 1
 fi
 
@@ -86,3 +98,7 @@ else
     echo ""
     echo "❌ Application exited with error"
 fi
+
+echo ""
+echo "Press any key to close..."
+read -n 1

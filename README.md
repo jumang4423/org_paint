@@ -3,7 +3,7 @@
 ![Screenshot](data/glsl_paint_539137.png)
 
 ## 起動方法
-`./run.sh` をダブルクリックして起動
+`Paint.command` をダブルクリックして起動
 
 ## 操作方法
 
