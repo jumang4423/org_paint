@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# GLSL Paint App Launcher
+# Org Paint App Launcher (CPU renderer)
 # For thermal printer output (576px width)
 
 # Change to the directory where this script is located
 cd "$(dirname "$0")"
 
 echo "========================================="
-echo "     GLSL Paint - Thermal Printer"
+echo "     Org Paint - Thermal Printer"
 echo "========================================="
 echo ""
 
@@ -83,7 +83,7 @@ fi
 
 echo ""
 echo "✅ All checks passed!"
-echo "Starting GLSL Paint App..."
+echo "Starting Org Paint (CPU) App..."
 echo "========================================="
 echo ""
 

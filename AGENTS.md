@@ -1,9 +1,9 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `org_paint.pde` drives the GLSL-based canvas, MIDI control, undo/redo, and orchestrates helper classes.
+- `org_paint.pde` drives the CPU-based canvas, MIDI control, undo/redo, and orchestrates helper classes.
 - `AnimatedPen.pde` manages particle-style overlays, while `LineCanvas.pde` stores and animates line segments.
-- `paint_final_frag.glsl` holds the fragment shader; keep shader constants in sync with `CANVAS_WIDTH` and brush logic.
+- Canvas chunks are rendered as CPU `PGraphics` surfaces sized with `CANVAS_WIDTH`/`CHUNK_HEIGHT`; keep constants in sync with brush logic.
 - Art assets and animation frames live in `data/` (`kit_frames/`, `smile.png`, etc.); keep new assets optimized for 576px width.
 - `munbyn_printer.py` wraps ESC/POS printing for the thermal printer workflow and expects Python 3 plus `python-escpos`.
 
@@ -19,7 +19,7 @@
 
 ## Testing Guidelines
 - Run the sketch (`./Paint.command`) after changes and exercise drawing, erasing, zoom, animation playback, and save/print triggers.
-- Watch the console for shader compile errors or MIDI connection warnings; address them before submitting changes.
+- Watch the console for renderer warnings or MIDI connection issues; address them before submitting changes.
 - Validate printing flows by exporting an image, then instantiating `MUNBYNPrinter` in a Python REPL and sending a small test ticket.
 - When introducing new assets, verify they appear under the correct `data/` subdirectory and render at 576px width without stretching.
 
@@ -31,4 +31,3 @@
 ## Peripheral & Asset Notes
 - Maintain directory naming patterns (`kit_frames/frameNNN.png`) so animation loaders keep working without code changes.
 - Re-run `./Paint.command` after updating Processing libraries to ensure The MidiBus reinstall logic completes successfully.
-- Document shader-level expectations (precision, uniforms) in PRs when touching `paint_final_frag.glsl` to help reviewers trace rendering differences.

@@ -1,14 +1,11 @@
-// Infinite Canvas Painting App - GLSL Version (OPTIMIZED)
+// Infinite Canvas Painting App - CPU Renderer Version
 // For thermal printer output (576px width)
-// ALL rendering done with GLSL shaders
+// Rendering uses Processing's CPU-based surfaces (JAVA2D)
 
 import java.io.*;
 import javax.sound.midi.*;
-import processing.opengl.*;
 
-PShader paintShader;
-ArrayList<PGraphics> chunkTextures;  // GPU textures
-ArrayList<PGraphics> chunkBuffers;   // Ping-pong buffers
+ArrayList<PGraphics> chunkTextures;  // Canvas chunks rendered on CPU surfaces
 ArrayList<Integer> chunkPositions;
 
 // Line-based canvas for Vib-Ribbon style
@@ -65,8 +62,6 @@ float zoomScale = 1.0;
 float zoomOffsetX = 0;
 float zoomOffsetY = 0;
 
-// Mouse state for shader
-PVector currentMouse = new PVector(-1, -1);
 PVector prevMouse = new PVector(-1, -1);
 
 // Undo/Redo state (single history)
@@ -80,8 +75,6 @@ boolean pendingRedo = false;  // Defer redo to draw loop
 
 // Scaling for display
 PGraphics lowResCanvas;
-PGraphics rainbowBuffer;  // Cache for rainbow pattern
-int rainbowUpdateCounter = 0;
 float displayScale = 1.0;
 
 // Startup screen
@@ -123,11 +116,9 @@ boolean modalShowAnimationType = false;  // Show animation type in modal
 boolean modalShowAnimationSelect = false;  // Show animation selection in modal
 
 void setup() {
-  fullScreen(P3D);  // Fullscreen
+  fullScreen(JAVA2D);  // Must be first line in setup() per Processing docs
   noSmooth();  // Disable antialiasing for pixel-perfect rendering
-  hint(DISABLE_TEXTURE_MIPMAPS);  // Disable mipmaps for sharp pixels
-  ((PGraphicsOpenGL)g).textureSampling(2);  // Nearest neighbor sampling
-  
+
   // Calculate scale to fill screen width (prioritize full 576px width accessibility)
   displayScale = (float)width / CANVAS_WIDTH;
   
@@ -135,17 +126,11 @@ void setup() {
   SCREEN_HEIGHT = (int)(height / displayScale);
   
   // Create low-res canvas for actual drawing (full screen height)
-  lowResCanvas = createGraphics(CANVAS_WIDTH, SCREEN_HEIGHT, P3D);
+  lowResCanvas = createGraphics(CANVAS_WIDTH, SCREEN_HEIGHT);
   lowResCanvas.noSmooth();  // No antialiasing on low-res canvas too
   
-  // Create rainbow buffer for background pattern
-  rainbowBuffer = createGraphics(CANVAS_WIDTH, SCREEN_HEIGHT, P3D);
-  rainbowBuffer.noSmooth();
-  
-  
-  // Initialize GPU texture arrays
+  // Initialize chunk surfaces
   chunkTextures = new ArrayList<PGraphics>();
-  chunkBuffers = new ArrayList<PGraphics>();
   chunkPositions = new ArrayList<Integer>();
   
   // Initialize line canvas
@@ -160,23 +145,10 @@ void setup() {
   palette[1] = color(0, 255, 0);     // Green  
   palette[2] = color(200, 200, 0);   // Darker Yellow (better for printing)
   palette[3] = color(192, 192, 192); // Light gray
-  palette[4] = color(255, 0, 255);   // Rainbow (will be handled specially in shader)
-  
-  // Load final GLSL paint shader
-  try {
-    paintShader = loadShader("paint_final_frag.glsl");
-    if (paintShader == null) {
-      println("WARNING: Failed to load shader, using fallback mode");
-    } else {
-      println("Shader loaded successfully");
-    }
-  } catch (Exception e) {
-    println("WARNING: Error loading shader: " + e.getMessage() + ", using fallback mode");
-    paintShader = null;
-  }
+  palette[4] = color(255, 0, 255);   // Rainbow placeholder (line mode animates via LineCanvas)
   
   // Create initial chunk
-  createGPUChunk(0);
+  createChunk(0);
   
   // Initialize MIDI
   initMIDI();
@@ -187,9 +159,9 @@ void setup() {
   // Initialize animated pen
   animatedPen = new AnimatedPen();
   
-  println("GLSL-based infinite canvas initialized (optimized)");
+  println("CPU-based infinite canvas initialized");
   println("Canvas width: " + CANVAS_WIDTH + "px");
-  println("On-demand GPU rendering enabled");
+  println("CPU chunk rendering enabled");
   println("Max chunks: " + MAX_CHUNKS);
   // Load stamp images and handle GIF animation
   stampImages = new PImage[stampImageNames.length];
@@ -241,7 +213,6 @@ void setup() {
       // Regular static image
       stampImages[i] = loadImage(fileName);
       if (stampImages[i] != null) {
-        ((PGraphicsOpenGL)g).textureSampling(2);  // Nearest neighbor
         println("Loaded static image: " + fileName + " (" + stampImages[i].width + "x" + stampImages[i].height + ")");
         isAnimated[i] = false;
         totalFrames[i] = 1;
@@ -275,7 +246,7 @@ void saveUndoState() {
   
   // Copy all current chunks
   for (PGraphics chunk : chunkTextures) {
-    PGraphics copy = createGraphics(chunk.width, chunk.height, P3D);
+    PGraphics copy = createGraphics(chunk.width, chunk.height);
     copy.noSmooth();
     copy.beginDraw();
     copy.image(chunk, 0, 0);
@@ -304,7 +275,7 @@ void performUndo() {
   redoChunkTextures.clear();
   
   for (PGraphics chunk : chunkTextures) {
-    PGraphics copy = createGraphics(chunk.width, chunk.height, P3D);
+    PGraphics copy = createGraphics(chunk.width, chunk.height);
     copy.noSmooth();
     copy.beginDraw();
     copy.image(chunk, 0, 0);
@@ -336,7 +307,7 @@ void performRedo() {
   undoChunkTextures.clear();
   
   for (PGraphics chunk : chunkTextures) {
-    PGraphics copy = createGraphics(chunk.width, chunk.height, P3D);
+    PGraphics copy = createGraphics(chunk.width, chunk.height);
     copy.noSmooth();
     copy.beginDraw();
     copy.image(chunk, 0, 0);
@@ -357,7 +328,7 @@ void performRedo() {
   hasRedo = false;
 }
 
-void createGPUChunk(int yPos) {
+void createChunk(int yPos) {
   // Check if already exists
   for (int i = 0; i < chunkPositions.size(); i++) {
     if (chunkPositions.get(i) == yPos) return;
@@ -369,33 +340,19 @@ void createGPUChunk(int yPos) {
     return;
   }
   
-  // Create two GPU textures for ping-pong
-  PGraphics texture = createGraphics(CANVAS_WIDTH, CHUNK_HEIGHT, P3D);
-  PGraphics buffer = createGraphics(CANVAS_WIDTH, CHUNK_HEIGHT, P3D);
-  
-  // No antialiasing on chunks
-  texture.noSmooth();
-  buffer.noSmooth();
-  
+  // Create a CPU-backed surface for this chunk
+  PGraphics chunk = createGraphics(CANVAS_WIDTH, CHUNK_HEIGHT);
+  chunk.noSmooth();
+
   // Initialize to white with full opacity
-  texture.beginDraw();
-  texture.background(255, 255, 255);  // Explicit white
-  texture.fill(255);  // Ensure fill is white
-  texture.noStroke();
-  texture.rect(0, 0, CANVAS_WIDTH, CHUNK_HEIGHT);  // Draw white rect to ensure coverage
-  texture.endDraw();
-  texture.flush();  // Ensure GPU sync
-  
-  buffer.beginDraw();
-  buffer.background(255, 255, 255);  // Explicit white
-  buffer.fill(255);  // Ensure fill is white
-  buffer.noStroke();
-  buffer.rect(0, 0, CANVAS_WIDTH, CHUNK_HEIGHT);  // Draw white rect to ensure coverage
-  buffer.endDraw();
-  buffer.flush();  // Ensure GPU sync
-  
-  chunkTextures.add(texture);
-  chunkBuffers.add(buffer);
+  chunk.beginDraw();
+  chunk.background(255, 255, 255);
+  chunk.noStroke();
+  chunk.fill(255);
+  chunk.rect(0, 0, CANVAS_WIDTH, CHUNK_HEIGHT);
+  chunk.endDraw();
+
+  chunkTextures.add(chunk);
   chunkPositions.add(yPos);
 }
 
@@ -406,7 +363,7 @@ int getChunkIndex(float globalY) {
   int chunkY = ((int)globalY / CHUNK_HEIGHT) * CHUNK_HEIGHT;
   
   // Ensure chunk exists
-  createGPUChunk(chunkY);
+  createChunk(chunkY);
   
   // Find chunk index
   for (int i = 0; i < chunkPositions.size(); i++) {
@@ -432,90 +389,39 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
   }
   
   // Animation erasing is now handled in the main draw loop
-  
-  // Ping-pong: swap textures
-  PGraphics currentTexture = chunkTextures.get(chunkIndex);
-  PGraphics bufferTexture = chunkBuffers.get(chunkIndex);
-  
-  // Only apply shader if it's loaded
-  if (paintShader != null) {
-    // Convert Y to bottom-origin for shader sampling
-    float shaderMouseY = CHUNK_HEIGHT - localMouseY;
-    float shaderPrevY = (globalPrevX < 0 || globalPrevY < 0) ? -1.0 : (CHUNK_HEIGHT - localPrevY);
 
-    // Set shader uniforms
-    paintShader.set("u_mouse", globalMouseX, shaderMouseY);
-    paintShader.set("u_prevMouse", globalPrevX < 0 ? -1.0 : globalPrevX,
-                                   shaderPrevY);
-    // Use much bigger brush size for eraser
-    float shaderBrushSize = isErasing ? brushSize * 5.0 : brushSize;
-    paintShader.set("u_brushSize", shaderBrushSize);
-    paintShader.set("u_isErasing", isErasing ? 1.0 : 0.0);
-    
-    // Set image mode uniforms
-    paintShader.set("u_isImageMode", currentPenMode == PEN_MODE_IMAGE ? 1.0 : 0.0);
-    paintShader.set("u_imageSize", imageStampSize);
-    
-    // Pass stamp image if in image mode
-    if (currentPenMode == PEN_MODE_IMAGE && stampImages != null && 
-        currentImageIndex < stampImages.length && stampImages[currentImageIndex] != null) {
-      paintShader.set("u_stampImage", stampImages[currentImageIndex]);
+  PGraphics chunk = chunkTextures.get(chunkIndex);
+  chunk.beginDraw();
+
+  if (currentPenMode == PEN_MODE_IMAGE) {
+    if (stampImages != null && currentImageIndex < stampImages.length && stampImages[currentImageIndex] != null) {
+      chunk.imageMode(CENTER);
+      chunk.image(stampImages[currentImageIndex], globalMouseX, localMouseY, imageStampSize, imageStampSize);
+      chunk.imageMode(CORNER);
     }
-    
-    // Pass color to shader
-    color currentColor = palette[currentColorIndex];
-    paintShader.set("u_paintColor", red(currentColor)/255.0, green(currentColor)/255.0, blue(currentColor)/255.0);
-    paintShader.set("u_isRainbow", currentColorIndex == 4 ? 1.0 : 0.0);
-    paintShader.set("u_time", millis() / 1000.0);
-    
-    // Apply shader to buffer
-    bufferTexture.beginDraw();
-    bufferTexture.shader(paintShader);
-    bufferTexture.image(currentTexture, 0, 0, CANVAS_WIDTH, CHUNK_HEIGHT);
-    bufferTexture.endDraw();
   } else {
-    // Fallback: Simple drawing without shader
-    bufferTexture.beginDraw();
-    bufferTexture.image(currentTexture, 0, 0);
-    
-    // Draw with basic Processing commands
-    if (currentPenMode == PEN_MODE_IMAGE) {
-      // Draw stamp image
-      if (stampImages != null && currentImageIndex < stampImages.length && stampImages[currentImageIndex] != null) {
-        bufferTexture.imageMode(CENTER);
-        bufferTexture.image(stampImages[currentImageIndex], globalMouseX, localMouseY, imageStampSize, imageStampSize);
-        bufferTexture.imageMode(CORNER);
-      }
+    color drawColor = palette[currentColorIndex];
+    if (isErasing) {
+      chunk.stroke(255);
+      chunk.fill(255);
     } else {
-      // Regular brush
-      if (isErasing) {
-        bufferTexture.stroke(255);
-        bufferTexture.fill(255);
-      } else {
-        color currentColor = palette[currentColorIndex];
-        bufferTexture.stroke(currentColor);
-        bufferTexture.fill(currentColor);
-      }
-      
-      // Use much bigger brush size for eraser
-      float effectiveBrushSize = isErasing ? brushSize * 5.0 : brushSize;
-      bufferTexture.strokeWeight(effectiveBrushSize);
-      bufferTexture.strokeCap(ROUND);
-      
-      // Draw line from previous position if available
-      if (globalPrevX >= 0 && globalPrevY >= 0) {
-        bufferTexture.line(globalPrevX, localPrevY, globalMouseX, localMouseY);
-      }
-      // Also draw a circle at current position
-      bufferTexture.noStroke();
-      bufferTexture.ellipse(globalMouseX, localMouseY, effectiveBrushSize, effectiveBrushSize);
+      chunk.stroke(drawColor);
+      chunk.fill(drawColor);
     }
-    bufferTexture.endDraw();
+
+    float effectiveBrushSize = isErasing ? brushSize * 5.0 : brushSize;
+    chunk.strokeWeight(effectiveBrushSize);
+    chunk.strokeCap(ROUND);
+
+    if (globalPrevX >= 0 && globalPrevY >= 0) {
+      chunk.line(globalPrevX, localPrevY, globalMouseX, localMouseY);
+    }
+
+    chunk.noStroke();
+    chunk.ellipse(globalMouseX, localMouseY, effectiveBrushSize, effectiveBrushSize);
   }
-  
-  // Swap references
-  chunkTextures.set(chunkIndex, bufferTexture);
-  chunkBuffers.set(chunkIndex, currentTexture);
+
+  chunk.endDraw();
 }
 
 void draw() {
@@ -656,7 +562,7 @@ void draw() {
       
       // Ensure chunk exists at this position
       int chunkY = ((int)globalMouseY / CHUNK_HEIGHT) * CHUNK_HEIGHT;
-      createGPUChunk(chunkY);
+      createChunk(chunkY);
       
       // Add point to line canvas
       lineCanvas.addPoint(globalMouseX, globalMouseY);

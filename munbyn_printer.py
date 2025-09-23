@@ -258,7 +258,7 @@ if __name__ == "__main__":
         printer = MUNBYNPrinter(connection_type='usb')
         
         # Print header
-        printer.text("== GLSL Paint ==\n", align='center', width=2, height=2)
+        printer.text("== Org Paint ==\n", align='center', width=2, height=2)
         printer.text(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n", align='center')
         printer.feed(1)
         
@@ -267,7 +267,7 @@ if __name__ == "__main__":
         
         # Print footer
         printer.feed(1)
-        printer.text("Generated with Processing + GLSL\n", align='center', font='b')
+        printer.text("Generated with Processing (CPU renderer)\n", align='center', font='b')
         printer.text("576px thermal printer width\n", align='center', font='b')
         
         # Cut paper
