@@ -3,10 +3,12 @@
 // Rendering uses Processing's CPU-based surfaces (JAVA2D)
 
 import java.io.*;
+import java.util.HashMap;
 import javax.sound.midi.*;
 
 ArrayList<PGraphics> chunkTextures;  // Canvas chunks rendered on CPU surfaces
 ArrayList<Integer> chunkPositions;
+HashMap<Integer, Integer> chunkIndexMap;  // Maps chunk Y coordinate to array index
 
 // Line-based canvas for Vib-Ribbon style
 LineCanvas lineCanvas;
@@ -41,6 +43,12 @@ String[] penModeNames = {"DEFAULT", "REMOVE", "IMAGE", "ANIMATION"};
 int currentColorIndex = 0;  // 0=black, 1=green, 2=yellow, 3=lightgray, 4=rainbow
 color[] palette = new color[5];
 String[] colorNames = {"BLACK", "GREEN", "YELLOW", "LIGHT GRAY", "RAINBOW"};
+
+// Precomputed rainbow background assets
+int[][] rainbowDitherMatrix;
+color[] rainbowPalette;
+final int RAINBOW_BLOCK_SIZE = 8;
+final color RAINBOW_HIGHLIGHT_COLOR = 0xFFFFFFFF;
 
 // Modal system
 String modalMessage = "";
@@ -132,6 +140,7 @@ void setup() {
   // Initialize chunk surfaces
   chunkTextures = new ArrayList<PGraphics>();
   chunkPositions = new ArrayList<Integer>();
+  chunkIndexMap = new HashMap<Integer, Integer>();
   
   // Initialize line canvas
   lineCanvas = new LineCanvas();
@@ -146,6 +155,31 @@ void setup() {
   palette[2] = color(200, 200, 0);   // Darker Yellow (better for printing)
   palette[3] = color(192, 192, 192); // Light gray
   palette[4] = color(255, 0, 255);   // Rainbow placeholder (line mode animates via LineCanvas)
+  
+  rainbowDitherMatrix = new int[][] {
+    {0, 8, 2, 10},
+    {12, 4, 14, 6},
+    {3, 11, 1, 9},
+    {15, 7, 13, 5}
+  };
+  rainbowPalette = new color[] {
+    color(255, 255, 255), // White
+    color(255, 255, 85),  // Yellow
+    color(85, 255, 255),  // Light Cyan
+    color(255, 85, 255),  // Light Magenta
+    color(85, 255, 85),   // Light Green
+    color(255, 85, 85),   // Light Red
+    color(85, 85, 255),   // Light Blue
+    color(255, 170, 85),  // Orange
+    color(255, 85, 170),  // Pink
+    color(170, 255, 85),  // Lime
+    color(85, 255, 170),  // Mint
+    color(170, 85, 255),  // Purple
+    color(255, 255, 170), // Pale Yellow
+    color(170, 255, 255), // Pale Cyan
+    color(255, 170, 255), // Pale Magenta
+    color(170, 170, 255)  // Pale Blue
+  };
   
   // Create initial chunk
   createChunk(0);
@@ -329,9 +363,9 @@ void performRedo() {
 }
 
 void createChunk(int yPos) {
-  // Check if already exists
-  for (int i = 0; i < chunkPositions.size(); i++) {
-    if (chunkPositions.get(i) == yPos) return;
+  // Fast path: reuse existing chunk if present
+  if (chunkIndexMap.containsKey(yPos)) {
+    return;
   }
   
   // OPTIMIZATION: Limit chunks to prevent memory bloat
@@ -354,6 +388,7 @@ void createChunk(int yPos) {
 
   chunkTextures.add(chunk);
   chunkPositions.add(yPos);
+  chunkIndexMap.put(yPos, chunkTextures.size() - 1);
 }
 
 int getChunkIndex(float globalY) {
@@ -366,12 +401,8 @@ int getChunkIndex(float globalY) {
   createChunk(chunkY);
   
   // Find chunk index
-  for (int i = 0; i < chunkPositions.size(); i++) {
-    if (chunkPositions.get(i) == chunkY) {
-      return i;
-    }
-  }
-  return -1;
+  Integer chunkIndex = chunkIndexMap.get(chunkY);
+  return chunkIndex != null ? chunkIndex : -1;
 }
 
 void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
@@ -632,26 +663,15 @@ void draw() {
   int startChunkY = max(0, (int)(scrollY / CHUNK_HEIGHT) * CHUNK_HEIGHT);
   int endChunkY = (int)((scrollY + SCREEN_HEIGHT) / CHUNK_HEIGHT + 1) * CHUNK_HEIGHT;
   
-  // Track which areas have chunks for rainbow rendering
-  boolean[] hasChunk = new boolean[(endChunkY - startChunkY) / CHUNK_HEIGHT + 1];
-  
   for (int chunkY = startChunkY; chunkY <= endChunkY; chunkY += CHUNK_HEIGHT) {
-    boolean found = false;
-    for (int i = 0; i < chunkPositions.size(); i++) {
-      if (chunkPositions.get(i) == chunkY) {
-        PGraphics chunk = chunkTextures.get(i);
-        float renderY = chunkY - scrollY;
-        lowResCanvas.image(chunk, 0, renderY);
-        hasChunk[(chunkY - startChunkY) / CHUNK_HEIGHT] = true;
-        found = true;
-        break;
-      }
-    }
-    
-    // Draw rainbow only where no chunk exists
-    if (!found) {
+    Integer chunkIdx = chunkIndexMap.get(chunkY);
+    if (chunkIdx != null) {
+      PGraphics chunk = chunkTextures.get(chunkIdx);
       float renderY = chunkY - scrollY;
-      // Only draw if visible on screen
+      lowResCanvas.image(chunk, 0, renderY);
+    } else {
+      // Draw rainbow only where no chunk exists
+      float renderY = chunkY - scrollY;
       if (renderY < SCREEN_HEIGHT && renderY + CHUNK_HEIGHT > 0) {
         drawRainbowSection(renderY, min(CHUNK_HEIGHT, SCREEN_HEIGHT - (int)renderY));
       }
@@ -784,70 +804,53 @@ void draw() {
 }
 
 void drawRainbowSection(float yOffset, int height) {
-  // Fast old-school dither pattern (like Amiga/C64 demos)
-  float time = millis() * 0.00005;  // Very slow scroll
-  
-  // Classic 4x4 ordered dither for speed
-  int[][] dither4 = {
-    {0, 8, 2, 10},
-    {12, 4, 14, 6},
-    {3, 11, 1, 9},
-    {15, 7, 13, 5}
-  };
-  
-  // Bright Amiga/Commodore style colors only!
-  color[] retroColors = {
-    color(255, 255, 255), // White
-    color(255, 255, 85),  // Yellow
-    color(85, 255, 255),  // Light Cyan
-    color(255, 85, 255),  // Light Magenta
-    color(85, 255, 85),   // Light Green
-    color(255, 85, 85),   // Light Red
-    color(85, 85, 255),   // Light Blue
-    color(255, 170, 85),  // Orange
-    color(255, 85, 170),  // Pink
-    color(170, 255, 85),  // Lime
-    color(85, 255, 170),  // Mint
-    color(170, 85, 255),  // Purple
-    color(255, 255, 170), // Pale Yellow
-    color(170, 255, 255), // Pale Cyan
-    color(255, 170, 255), // Pale Magenta
-    color(170, 170, 255)  // Pale Blue
-  };
-  
+  if (height <= 0) {
+    return;
+  }
+
+  float time = millis() * 0.00005f;  // Very slow scroll
+  int[][] ditherMatrix = rainbowDitherMatrix;
+  color[] colors = rainbowPalette;
+  int paletteSize = colors.length;
+  int ditherRows = ditherMatrix.length;
+  int ditherCols = ditherMatrix[0].length;
+  float baseY = yOffset + scrollY;
+
   lowResCanvas.strokeWeight(1);
   lowResCanvas.noSmooth();
-  
-  // Draw in 8x8 pixel blocks for MUCH better performance
-  int blockSize = 8;
-  for (int y = 0; y < height; y += blockSize) {
-    for (int x = 0; x < CANVAS_WIDTH; x += blockSize) {
-      float globalY = yOffset + y + scrollY;
-      
-      // Get dither position
-      int dx = (x / blockSize) % 4;
-      int dy = ((int)(globalY / blockSize)) % 4;
-      float ditherValue = dither4[dy][dx] / 15.0;
-      
-      // Create diagonal scrolling bands
-      float bandPos = ((globalY + x) * 0.01 + time * 100);
-      int colorIndex = (int)(bandPos + ditherValue * 4) % 16;
-      
-      // Apply the retro color
-      color c = retroColors[colorIndex];
-      
-      // Add scanline pattern within block
+
+  for (int y = 0; y < height; y += RAINBOW_BLOCK_SIZE) {
+    float globalY = baseY + y;
+    int dy = ((int)(globalY / RAINBOW_BLOCK_SIZE)) % ditherRows;
+    if (dy < 0) {
+      dy += ditherRows;
+    }
+
+    float bandSeed = globalY * 0.01f + time * 100f;
+
+    for (int x = 0; x < CANVAS_WIDTH; x += RAINBOW_BLOCK_SIZE) {
+      int dx = (x / RAINBOW_BLOCK_SIZE) % ditherCols;
+      float ditherValue = ditherMatrix[dy][dx] / 15.0f;
+
+      int rawIndex = (int)(bandSeed + x * 0.01f + ditherValue * 4f);
+      int colorIndex = rawIndex % paletteSize;
+      if (colorIndex < 0) {
+        colorIndex += paletteSize;
+      }
+
+      float drawY = yOffset + y;
+      color c = colors[colorIndex];
+
       lowResCanvas.noStroke();
       lowResCanvas.fill(c);
-      lowResCanvas.rect(x, yOffset + y, blockSize, blockSize);
-      
-      // Add simple dither texture with lines
+      lowResCanvas.rect(x, drawY, RAINBOW_BLOCK_SIZE, RAINBOW_BLOCK_SIZE);
+
       if (ditherValue > 0.5) {
-        lowResCanvas.stroke(lerpColor(c, color(255, 255, 255), 0.2));
+        lowResCanvas.stroke(lerpColor(c, RAINBOW_HIGHLIGHT_COLOR, 0.2f));
         lowResCanvas.strokeWeight(1);
-        // Draw some dither lines for texture
-        lowResCanvas.line(x, yOffset + y + 2, x + blockSize, yOffset + y + 2);
-        lowResCanvas.line(x, yOffset + y + 6, x + blockSize, yOffset + y + 6);
+        lowResCanvas.line(x, drawY + 2, x + RAINBOW_BLOCK_SIZE, drawY + 2);
+        lowResCanvas.line(x, drawY + 6, x + RAINBOW_BLOCK_SIZE, drawY + 6);
+        lowResCanvas.noStroke();
       }
     }
   }
@@ -1909,13 +1912,11 @@ void saveAndPrint(boolean printToReceipt) {
     
     // Render visible chunks
     for (int chunkY = startChunkY; chunkY <= endChunkY; chunkY += CHUNK_HEIGHT) {
-      for (int i = 0; i < chunkPositions.size(); i++) {
-        if (chunkPositions.get(i) == chunkY) {
-          PGraphics chunk = chunkTextures.get(i);
-          float renderY = chunkY - y;  // Position relative to this section
-          lowResCanvas.image(chunk, 0, renderY);
-          break;
-        }
+      Integer chunkIdx = chunkIndexMap.get(chunkY);
+      if (chunkIdx != null) {
+        PGraphics chunk = chunkTextures.get(chunkIdx);
+        float renderY = chunkY - y;  // Position relative to this section
+        lowResCanvas.image(chunk, 0, renderY);
       }
     }
     
@@ -1996,13 +1997,11 @@ PImage renderFullCanvasToImage() {
 
     // Render visible chunks
     for (int chunkY = startChunkY; chunkY <= endChunkY; chunkY += CHUNK_HEIGHT) {
-      for (int i = 0; i < chunkPositions.size(); i++) {
-        if (chunkPositions.get(i) == chunkY) {
-          PGraphics chunk = chunkTextures.get(i);
-          float renderY = chunkY - y;
-          lowResCanvas.image(chunk, 0, renderY);
-          break;
-        }
+      Integer chunkIdx = chunkIndexMap.get(chunkY);
+      if (chunkIdx != null) {
+        PGraphics chunk = chunkTextures.get(chunkIdx);
+        float renderY = chunkY - y;
+        lowResCanvas.image(chunk, 0, renderY);
       }
     }
 
