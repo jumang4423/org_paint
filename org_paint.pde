@@ -439,10 +439,14 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
   
   // Only apply shader if it's loaded
   if (paintShader != null) {
+    // Convert Y to bottom-origin for shader sampling
+    float shaderMouseY = CHUNK_HEIGHT - localMouseY;
+    float shaderPrevY = (globalPrevX < 0 || globalPrevY < 0) ? -1.0 : (CHUNK_HEIGHT - localPrevY);
+
     // Set shader uniforms
-    paintShader.set("u_mouse", globalMouseX, localMouseY);
-    paintShader.set("u_prevMouse", globalPrevX < 0 ? -1.0 : globalPrevX, 
-                                   globalPrevX < 0 ? -1.0 : localPrevY);
+    paintShader.set("u_mouse", globalMouseX, shaderMouseY);
+    paintShader.set("u_prevMouse", globalPrevX < 0 ? -1.0 : globalPrevX,
+                                   shaderPrevY);
     // Use much bigger brush size for eraser
     float shaderBrushSize = isErasing ? brushSize * 5.0 : brushSize;
     paintShader.set("u_brushSize", shaderBrushSize);

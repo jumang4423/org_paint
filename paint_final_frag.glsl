@@ -59,7 +59,9 @@ void main() {
                 
                 if (stampUV.x >= 0.0 && stampUV.x <= 1.0 && 
                     stampUV.y >= 0.0 && stampUV.y <= 1.0) {
-                    vec4 stampColor = texture2D(u_stampImage, stampUV);
+                    // Flip Y because Processing textures use top-left origin
+                    vec2 sampleUV = vec2(stampUV.x, 1.0 - stampUV.y);
+                    vec4 stampColor = texture2D(u_stampImage, sampleUV);
                     
                     // Apply stamp with alpha blending
                     if (stampColor.a > 0.1) {
