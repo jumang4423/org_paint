@@ -278,6 +278,11 @@ class LineSegment {
   float animationIntensity; // Store the intensity when this line was created
   float lineWaveTime; // Per-line animation time
   boolean isRainbow = false; // If true, color cycles over time
+  static final float CHAOS_NOISE_SCALE = 0.02f;
+  static final float CHAOS_TIME_SCALE = 0.6f;
+  static final float CHAOS_MAGNITUDE = 1.5f;
+  static final float CHAOS_FLICKER_SPEED = 7.5f;
+  PVector offsetScratch = new PVector();
   
   LineSegment(float x, float y) {
     points = new ArrayList<PVector>();
@@ -324,6 +329,46 @@ class LineSegment {
     lineWaveTime += deltaTime * animationIntensity;
   }
   
+  void computeOffsetForPoint(PVector point, PVector out, float amplitude, float frequency) {
+    float offsetX = 0;
+    float offsetY = 0;
+    
+    if (animationIntensity > 0) {
+      float basePhase = phaseOffset + (point.x * frequency + point.y * frequency * 0.3 + lineWaveTime * 2.0 + randomSeed);
+      float wave1 = sin(basePhase) * amplitude;
+      float wave2 = sin(basePhase * 3.2 + randomSeed) * (amplitude * 0.3);
+      float wave3 = cos(basePhase * 1.7 + randomSeed * 2) * (amplitude * 0.2);
+
+      offsetX = (wave1 * directionX + wave2 * abs(directionX) * 0.5) * animationIntensity;
+      offsetY = (wave1 * directionY + wave2 * abs(directionY) * 0.5 + wave3) * animationIntensity;
+
+      float spiralPhase = lineWaveTime + randomSeed * TWO_PI;
+      offsetX += cos(spiralPhase) * amplitude * 0.3 * directionX * animationIntensity;
+      offsetY += sin(spiralPhase * 1.3) * amplitude * 0.3 * directionY * animationIntensity;
+
+      float chaosTime = lineWaveTime * CHAOS_TIME_SCALE + randomSeed * 10.0f;
+      float noiseSample1 = noise(point.x * CHAOS_NOISE_SCALE + chaosTime,
+                                 point.y * CHAOS_NOISE_SCALE * 0.7f - chaosTime);
+      float noiseSample2 = noise(point.y * CHAOS_NOISE_SCALE * 1.3f - chaosTime * 0.6f,
+                                 point.x * CHAOS_NOISE_SCALE * 0.5f + chaosTime * 0.4f);
+
+      float chaosAmount = amplitude * (CHAOS_MAGNITUDE + animationIntensity * 0.6f);
+      offsetX += (noiseSample1 - 0.5f) * chaosAmount;
+      offsetY += (noiseSample2 - 0.5f) * chaosAmount;
+
+      float flickerPhase = lineWaveTime * CHAOS_FLICKER_SPEED + randomSeed * 5.0f;
+      float flicker = sin(flickerPhase);
+      offsetX += sin(basePhase * 4.5f) * amplitude * 0.25f * flicker * animationIntensity;
+      offsetY += cos(basePhase * 3.7f) * amplitude * 0.25f * (1.0f - flicker * 0.5f) * animationIntensity;
+
+      float shake = (noise(chaosTime * 0.5f, randomSeed) - 0.5f) * amplitude * 0.5f * animationIntensity;
+      offsetX += shake;
+      offsetY -= shake * 0.6f;
+    }
+
+    out.set(offsetX, offsetY);
+  }
+
   // Add a point to this line segment
   void addPoint(float x, float y) {
     // Only add if it's different from the last point
@@ -435,16 +480,7 @@ class LineSegment {
     // Handle single point (dot) drawing
     if (points.size() == 1) {
       PVector p = points.get(0);
-      
-      // Apply animation only if intensity > 0
-      float offsetX = 0;
-      float offsetY = 0;
-      
-      if (animationIntensity > 0) {
-        float phase = phaseOffset + lineWaveTime * 2.0;  // Use per-line time
-        offsetX = sin(phase + randomSeed) * amplitude * directionX * animationIntensity;
-        offsetY = cos(phase * 1.3 + randomSeed * 0.7) * amplitude * directionY * animationIntensity;
-      }
+      computeOffsetForPoint(p, offsetScratch, amplitude, frequency);
       
       // Set dynamic rainbow stroke color if enabled
       if (isRainbow) {
@@ -458,10 +494,10 @@ class LineSegment {
         canvas.stroke(strokeColor);
       }
       canvas.strokeWeight(strokeWeight * 2); // Make dots more visible
-      canvas.point(p.x + offsetX, p.y - viewportY + offsetY);
+      canvas.point(p.x + offsetScratch.x, p.y - viewportY + offsetScratch.y);
       return;
     }
-    
+
     if (points.size() < 2) return;
     
     // Set stroke color (dynamic if rainbow)
@@ -476,82 +512,30 @@ class LineSegment {
     }
     canvas.strokeWeight(strokeWeight);
     canvas.beginShape();
+    float prevDrawX = 0;
+    float prevDrawY = 0;
     
     for (int i = 0; i < points.size(); i++) {
       PVector p = points.get(i);
-      
-      // Apply animation only if intensity > 0
-      float offsetX = 0;
-      float offsetY = 0;
-      
-      if (animationIntensity > 0) {
-        // Each line has unique movement based on its random parameters
-        float phase = phaseOffset + (p.x * frequency + p.y * frequency * 0.3 + lineWaveTime * 2.0 + randomSeed);
-        
-        // Multi-directional movement using the line's unique direction vectors
-        float wave1 = sin(phase) * amplitude;
-        float wave2 = sin(phase * 3.2 + randomSeed) * (amplitude * 0.3);
-        float wave3 = cos(phase * 1.7 + randomSeed * 2) * (amplitude * 0.2);
-        
-        // Apply directional movement - each line moves in its own direction
-        offsetX = (wave1 * directionX + wave2 * abs(directionX) * 0.5) * animationIntensity;
-        offsetY = (wave1 * directionY + wave2 * abs(directionY) * 0.5 + wave3) * animationIntensity;
-        
-        // Add some circular/spiral motion for variety
-        float spiralPhase = lineWaveTime + randomSeed * TWO_PI;
-        offsetX += cos(spiralPhase) * amplitude * 0.3 * directionX * animationIntensity;
-        offsetY += sin(spiralPhase * 1.3) * amplitude * 0.3 * directionY * animationIntensity;
-      }
-      
-      // Draw vertex with animated offset
-      float drawX = p.x + offsetX;
-      float drawY = p.y - viewportY + offsetY;
+      computeOffsetForPoint(p, offsetScratch, amplitude, frequency);
+      float drawX = p.x + offsetScratch.x;
+      float drawY = p.y - viewportY + offsetScratch.y;
       
       if (i == 0) {
         canvas.vertex(drawX, drawY);
       } else {
-        // Add curve for smoother lines
-        PVector prev = points.get(i - 1);
-        float prevOffsetX = 0;
-        float prevOffsetY = 0;
-        
-        if (animationIntensity > 0) {
-          float prevPhase = phaseOffset + (prev.x * frequency + prev.y * frequency * 0.3 + lineWaveTime * 2.0 + randomSeed);
-          float prevWave1 = sin(prevPhase) * amplitude;
-          float prevWave2 = sin(prevPhase * 3.2 + randomSeed) * (amplitude * 0.3);
-          float prevWave3 = cos(prevPhase * 1.7 + randomSeed * 2) * (amplitude * 0.2);
-          
-          prevOffsetX = (prevWave1 * directionX + prevWave2 * abs(directionX) * 0.5) * animationIntensity;
-          prevOffsetY = (prevWave1 * directionY + prevWave2 * abs(directionY) * 0.5 + prevWave3) * animationIntensity;
-          
-          float spiralPhase = lineWaveTime + randomSeed * TWO_PI;
-          prevOffsetX += cos(spiralPhase) * amplitude * 0.3 * directionX * animationIntensity;
-          prevOffsetY += sin(spiralPhase * 1.3) * amplitude * 0.3 * directionY * animationIntensity;
-        }
-        
-        float prevDrawX = prev.x + prevOffsetX;
-        float prevDrawY = prev.y - viewportY + prevOffsetY;
-        
-        // Use curveVertex for smooth curves
+        // Use curveVertex for smooth curves with chaotic wobble
         canvas.curveVertex(prevDrawX, prevDrawY);
         canvas.curveVertex(drawX, drawY);
       }
+      
+      prevDrawX = drawX;
+      prevDrawY = drawY;
     }
     
     // Close the shape properly
     if (points.size() > 2) {
-      PVector last = points.get(points.size() - 1);
-      float lastOffsetX = 0;
-      float lastOffsetY = 0;
-      
-      if (animationIntensity > 0) {
-        float lastPhase = phaseOffset + (last.x * frequency + last.y * frequency * 0.3 + lineWaveTime * 2.0 + randomSeed);
-        float lastWave = sin(lastPhase) * amplitude;
-        lastOffsetX = lastWave * directionX * animationIntensity;
-        lastOffsetY = lastWave * directionY * animationIntensity;
-      }
-      
-      canvas.curveVertex(last.x + lastOffsetX, last.y - viewportY + lastOffsetY);
+      canvas.curveVertex(prevDrawX, prevDrawY);
     }
     
     canvas.endShape();
