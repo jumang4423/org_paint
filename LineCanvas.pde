@@ -57,14 +57,13 @@ class LineCanvas {
   }
   
   // Update animation
-  void update() {
-    waveTime += waveSpeed;  // Global time for reference
-    
-    // Update each line's animation based on its own intensity
+  void update(float timeScale) {
+    waveTime += waveSpeed * timeScale;
+
     for (LineSegment line : lines) {
-      line.updateAnimation(waveSpeed);
+      line.updateAnimation(waveSpeed * timeScale);
     }
-    
+
     // Update active lines based on viewport
     activeLines.clear();
     for (LineSegment line : lines) {

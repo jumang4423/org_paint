@@ -20,6 +20,14 @@ int SCREEN_HEIGHT = 324;
 final int MAX_CHUNKS = 50;  
 
 
+final float BASE_FRAME_RATE = 60.0f;
+final float TARGET_FRAME_RATE = 120.0f;
+final float MAX_DELTA_SECONDS = 1.0f / 15.0f;
+float deltaSeconds = 1.0f / BASE_FRAME_RATE;
+float frameTimeScale = 1.0f;
+int lastFrameMillis = -1;
+
+
 boolean isDrawing = false;
 boolean isErasing = false;
 float brushSize = 2.0;  
@@ -188,7 +196,7 @@ void setup() {
   initMIDI();
   
   
-  frameRate(60);
+  frameRate(TARGET_FRAME_RATE);
   
   
   animatedPen = new AnimatedPen();
@@ -456,12 +464,21 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
 }
 
 void draw() {
+  int now = millis();
+  if (lastFrameMillis < 0) {
+    deltaSeconds = 1.0f / BASE_FRAME_RATE;
+  } else {
+    deltaSeconds = (now - lastFrameMillis) / 1000.0f;
+  }
+  lastFrameMillis = now;
+  deltaSeconds = constrain(deltaSeconds, 0, MAX_DELTA_SECONDS);
+  frameTimeScale = deltaSeconds * BASE_FRAME_RATE;
   
   updateGifAnimations();
   
   
   if (animatedPen != null) {
-    animatedPen.update();
+    animatedPen.update(deltaSeconds, frameTimeScale);
   }
   
   
@@ -535,7 +552,7 @@ void draw() {
   
   
   if (lineCanvas != null) {
-    lineCanvas.update();
+    lineCanvas.update(frameTimeScale);
     lineCanvas.scrollTo(scrollY);
   }
   
@@ -1923,7 +1940,7 @@ void saveAndPrint(boolean printToReceipt) {
     
     if (lineCanvas != null) {
       lineCanvas.scrollTo(y);
-      lineCanvas.update(); 
+      lineCanvas.update(0); 
       lineCanvas.draw(lowResCanvas, false, 1.0, 0, 0);
     }
     
@@ -2008,7 +2025,7 @@ PImage renderFullCanvasToImage() {
     
     if (lineCanvas != null) {
       lineCanvas.scrollTo(y);
-      lineCanvas.update();
+      lineCanvas.update(0);
       lineCanvas.draw(lowResCanvas, false, 1.0, 0, 0);
     }
 
@@ -2275,7 +2292,7 @@ class MidiReceiver implements Receiver {
 
 void drawStartupScreen() {
   
-  startupAnimTime += 0.016;
+  startupAnimTime += deltaSeconds;
 
   
   background(255);
@@ -2496,13 +2513,6 @@ void saveCanvasCallback(File selection) {
   showModal("EXPORTED: " + displayName, 2000);
   println("Exported canvas to: " + filename);
 }
-
-
-
-
-
-
-
 
 
 

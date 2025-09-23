@@ -32,11 +32,11 @@ class AnimatedPen {
   }
   
   // Update all animations
-  void update() {
+  void update(float deltaSeconds, float timeScale) {
     // Update animations and remove dead ones
     for (int i = animations.size() - 1; i >= 0; i--) {
       AnimationInstance anim = animations.get(i);
-      anim.update();
+      anim.update(deltaSeconds, timeScale);
       if (anim.isDead()) {
         animations.remove(i);
       }
@@ -166,7 +166,7 @@ abstract class AnimationInstance {
     this.baseSize = size;
   }
   
-  abstract void update();
+  abstract void update(float deltaSeconds, float timeScale);
   abstract void draw(PGraphics canvas, float scrollY, boolean isZoomed, float zoomScale, float zoomOffsetX, float zoomOffsetY);
   abstract boolean intersects(float x, float y, float radius);
   abstract boolean intersectsRect(float x, float y, float width, float height);
@@ -206,10 +206,10 @@ class CloudAnimation extends AnimationInstance {
     }
   }
   
-  void update() {
+  void update(float deltaSeconds, float timeScale) {
     // Calculate dynamic max particles based on density
     int maxParticles = max(2, (int)(baseMaxParticles * cloudDensity * 2)); // 0-20 particles based on density
-    
+
     // Adjust spawn interval based on density (faster spawning with higher density)
     int dynamicSpawnInterval = (int)(particleSpawnInterval / max(0.2, cloudDensity));
     
@@ -225,7 +225,7 @@ class CloudAnimation extends AnimationInstance {
     // Update particles and recycle dead ones
     for (int i = particles.size() - 1; i >= 0; i--) {
       CloudParticle p = particles.get(i);
-      p.update();
+      p.update(deltaSeconds, timeScale);
       if (p.isDead()) {
         // Replace dead particle with new one to keep animation going
         particles.set(i, new CloudParticle(originX, originY, baseSize));
@@ -333,22 +333,19 @@ class CloudParticle {
     this.alpha = random(0.4, 0.7);
   }
   
-  void update() {
-    age += 16; // ~60fps
-    
-    // Move particle
-    x += vx;
-    y += vy;
-    
-    // Slight horizontal drift over time
-    vx += random(-0.01, 0.01) * (baseSize / 20);
-    vx *= 0.99; // Damping
-    
-    // Grow slightly over time
-    size += 0.05 * (baseSize / 20);
-    
-    // Fade out over time (but not completely)
-    alpha *= 0.997;
+  void update(float deltaSeconds, float timeScale) {
+    float deltaMillis = deltaSeconds * 1000.0f;
+    age += deltaMillis;
+
+    x += vx * timeScale;
+    y += vy * timeScale;
+
+    vx += random(-0.01, 0.01) * (baseSize / 20) * timeScale;
+    vx *= pow(0.99f, timeScale);
+
+    size += 0.05 * (baseSize / 20) * timeScale;
+
+    alpha *= pow(0.997f, timeScale);
   }
   
   boolean isDead() {
