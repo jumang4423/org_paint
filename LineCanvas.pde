@@ -183,81 +183,97 @@ class LineCanvas {
     return minY == Float.MAX_VALUE ? 0 : minY;
   }
   
-  // Save line data to file
-  void saveToFile(String filename) {
+  // Snapshot current state to a string array (used for undo/save)
+  String[] serializeState() {
     ArrayList<String> data = new ArrayList<String>();
-    
-    // Save header info
+
     data.add("LINE_CANVAS_V1");
     data.add("animationIntensity:" + animationIntensity);
     data.add("lineCount:" + lines.size());
-    
-    // Save each line segment
+
     for (LineSegment line : lines) {
       String lineData = "LINE:";
       lineData += line.strokeColor + ",";
       lineData += line.strokeWeight + ",";
       lineData += line.animationIntensity + ",";
       lineData += line.points.size() + ",";
-      
-      // Save points
+      lineData += (line.isRainbow ? 1 : 0) + ",";
+
       for (PVector p : line.points) {
         lineData += p.x + "," + p.y + ",";
       }
-      
+
       data.add(lineData);
     }
-    
-    // Save to file
-    saveStrings(filename, data.toArray(new String[0]));
+
+    return data.toArray(new String[0]);
   }
-  
+
+  // Restore state from serialized string array
+  void deserializeState(String[] data) {
+    lines.clear();
+    activeLines.clear();
+
+    if (data == null || data.length == 0) {
+      return;
+    }
+
+    if (!data[0].equals("LINE_CANVAS_V1")) {
+      return;
+    }
+
+    for (int i = 1; i < data.length; i++) {
+      String line = data[i];
+
+      if (line.startsWith("animationIntensity:")) {
+        animationIntensity = Float.parseFloat(line.split(":")[1]);
+      } else if (line.startsWith("LINE:")) {
+        String[] parts = line.substring(5).split(",");
+        if (parts.length >= 4) {
+          int col = Integer.parseInt(parts[0]);
+          float weight = Float.parseFloat(parts[1]);
+          float animIntensity = Float.parseFloat(parts[2]);
+          int pointCount = Integer.parseInt(parts[3]);
+
+          int baseIndex = 4;
+          boolean isRainbow = false;
+          if (parts.length >= baseIndex + 1 + pointCount * 2) {
+            // Newer serialized data includes the rainbow flag
+            isRainbow = parts[baseIndex].equals("1");
+            baseIndex++;
+          }
+
+          if (parts.length >= baseIndex + pointCount * 2) {
+            float firstX = Float.parseFloat(parts[baseIndex]);
+            float firstY = Float.parseFloat(parts[baseIndex + 1]);
+            LineSegment segment = new LineSegment(firstX, firstY, col, weight, animIntensity);
+            segment.isRainbow = isRainbow;
+
+            for (int j = 1; j < pointCount; j++) {
+              int coordIndex = baseIndex + j * 2;
+              float x = Float.parseFloat(parts[coordIndex]);
+              float y = Float.parseFloat(parts[coordIndex + 1]);
+              segment.addPoint(x, y);
+            }
+
+            lines.add(segment);
+          }
+        }
+      }
+    }
+  }
+
+  // Save line data to file
+  void saveToFile(String filename) {
+    saveStrings(filename, serializeState());
+  }
+
   // Load line data from file
   void loadFromFile(String filename) {
     try {
       String[] data = loadStrings(filename);
-      if (data == null || data.length == 0) return;
-      
-      // Clear existing lines
-      lines.clear();
-      activeLines.clear();
-      
-      // Check header
-      if (!data[0].equals("LINE_CANVAS_V1")) return;
-      
-      // Parse data
-      for (int i = 1; i < data.length; i++) {
-        String line = data[i];
-        
-        if (line.startsWith("animationIntensity:")) {
-          animationIntensity = Float.parseFloat(line.split(":")[1]);
-        } else if (line.startsWith("LINE:")) {
-          // Parse line segment
-          String[] parts = line.substring(5).split(",");
-          if (parts.length >= 4) {
-            int col = Integer.parseInt(parts[0]);
-            float weight = Float.parseFloat(parts[1]);
-            float animIntensity = Float.parseFloat(parts[2]);
-            int pointCount = Integer.parseInt(parts[3]);
-            
-            if (parts.length >= 4 + pointCount * 2) {
-              // Create line segment
-              float firstX = Float.parseFloat(parts[4]);
-              float firstY = Float.parseFloat(parts[5]);
-              LineSegment segment = new LineSegment(firstX, firstY, col, weight, animIntensity);
-              
-              // Add remaining points
-              for (int j = 1; j < pointCount; j++) {
-                float x = Float.parseFloat(parts[4 + j * 2]);
-                float y = Float.parseFloat(parts[4 + j * 2 + 1]);
-                segment.addPoint(x, y);
-              }
-              
-              lines.add(segment);
-            }
-          }
-        }
-      }
+      if (data == null) return;
+      deserializeState(data);
     } catch (Exception e) {
       println("Error loading line canvas: " + e.getMessage());
     }

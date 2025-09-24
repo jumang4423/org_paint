@@ -26,14 +26,29 @@ if ! command -v python3 &> /dev/null; then
 fi
 
 echo "Checking Python dependencies..."
-python3 -c "import escpos" 2>/dev/null
-if [ $? -ne 0 ]; then
+if python3 -c "import escpos" 2>/dev/null; then
+    echo "✅ Python dependencies already installed"
+else
     echo "⚠️  Warning: python-escpos not installed"
-    echo "Installing required packages..."
-    pip3 install python-escpos pillow pyusb
-    if [ $? -ne 0 ]; then
-        echo "Failed to install packages. Try:"
-        echo "  sudo pip3 install python-escpos pillow pyusb"
+    echo "Installing required packages to the user site-packages..."
+
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+        echo "pip for Python 3 not found, attempting to bootstrap it..."
+        python3 -m ensurepip --upgrade >/dev/null 2>&1
+    fi
+
+    python3 -m pip install --user --upgrade python-escpos pillow pyusb
+
+    if python3 -c "import escpos" 2>/dev/null; then
+        echo "✅ Python dependencies installed"
+    else
+        echo "❌ Failed to install packages automatically"
+        echo "Please run:"
+        echo "  python3 -m pip install --user --upgrade python-escpos pillow pyusb"
+        echo ""
+        echo "Press any key to close..."
+        read -n 1
+        exit 1
     fi
 fi
 

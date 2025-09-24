@@ -86,6 +86,10 @@ ArrayList<PGraphics> redoChunkTextures;
 boolean hasUndo = false;
 boolean hasRedo = false;
 boolean captureUndoState = false;  
+String[] undoLineState = null;
+String[] redoLineState = null;
+String[] undoAnimationState = null;
+String[] redoAnimationState = null;
 boolean pendingUndo = false;  
 boolean pendingRedo = false;  
 
@@ -106,7 +110,8 @@ volatile int pendingPenMode = -1;
 volatile int pendingImageIndex = -1;  
 volatile float pendingImageSize = -1;  
 volatile float pendingAnimationSpeed = -1;  
-volatile float pendingCloudDensity = -1;  
+volatile float pendingAnimationParamValue = -1;  
+volatile String pendingAnimationParamLabel = "";  
 int lastMidiCheck = 0;
 float lastKnownBrushSize = 2.0;  
 
@@ -296,9 +301,23 @@ void saveUndoState() {
     undoChunkTextures.add(copy);
   }
   
+  if (lineCanvas != null) {
+    undoLineState = lineCanvas.serializeState();
+  } else {
+    undoLineState = null;
+  }
+  if (animatedPen != null) {
+    undoAnimationState = animatedPen.serializeState();
+  } else {
+    undoAnimationState = null;
+  }
+
   hasUndo = true;
   hasRedo = false;  
   
+  redoLineState = null;
+  redoAnimationState = null;
+
   
   for (PGraphics g : redoChunkTextures) {
     if (g != null) g.dispose();
@@ -324,6 +343,17 @@ void performUndo() {
     copy.endDraw();
     redoChunkTextures.add(copy);
   }
+
+  if (lineCanvas != null) {
+    redoLineState = lineCanvas.serializeState();
+  } else {
+    redoLineState = null;
+  }
+  if (animatedPen != null) {
+    redoAnimationState = animatedPen.serializeState();
+  } else {
+    redoAnimationState = null;
+  }
   
   
   for (int i = 0; i < min(chunkTextures.size(), undoChunkTextures.size()); i++) {
@@ -333,9 +363,29 @@ void performUndo() {
     currentChunk.image(undoChunk, 0, 0);
     currentChunk.endDraw();
   }
+
+  if (lineCanvas != null) {
+    if (undoLineState != null) {
+      lineCanvas.deserializeState(undoLineState);
+    } else {
+      lineCanvas.clear();
+    }
+    lineCanvas.update(0);
+  }
+
+  if (animatedPen != null) {
+    if (undoAnimationState != null) {
+      animatedPen.deserializeState(undoAnimationState);
+    } else {
+      animatedPen.animations.clear();
+    }
+  }
   
   hasRedo = true;
   hasUndo = false;
+
+  undoLineState = null;
+  undoAnimationState = null;
 }
 
 
@@ -356,6 +406,17 @@ void performRedo() {
     copy.endDraw();
     undoChunkTextures.add(copy);
   }
+
+  if (lineCanvas != null) {
+    undoLineState = lineCanvas.serializeState();
+  } else {
+    undoLineState = null;
+  }
+  if (animatedPen != null) {
+    undoAnimationState = animatedPen.serializeState();
+  } else {
+    undoAnimationState = null;
+  }
   
   
   for (int i = 0; i < min(chunkTextures.size(), redoChunkTextures.size()); i++) {
@@ -365,9 +426,29 @@ void performRedo() {
     currentChunk.image(redoChunk, 0, 0);
     currentChunk.endDraw();
   }
+
+  if (lineCanvas != null) {
+    if (redoLineState != null) {
+      lineCanvas.deserializeState(redoLineState);
+    } else {
+      lineCanvas.clear();
+    }
+    lineCanvas.update(0);
+  }
+
+  if (animatedPen != null) {
+    if (redoAnimationState != null) {
+      animatedPen.deserializeState(redoAnimationState);
+    } else {
+      animatedPen.animations.clear();
+    }
+  }
   
   hasUndo = true;
   hasRedo = false;
+
+  redoLineState = null;
+  redoAnimationState = null;
 }
 
 void createChunk(int yPos) {
@@ -530,11 +611,14 @@ void draw() {
   
   if (pendingAnimationSpeed >= -3) {
     if (pendingAnimationSpeed == -3) {
-      
-      int densityPercent = (int)(pendingCloudDensity * 100);
-      showModal("CLOUD DENSITY: " + densityPercent + "%", 1000);
+      int paramPercent = (int)(pendingAnimationParamValue * 100);
+      String label = (pendingAnimationParamLabel != null && pendingAnimationParamLabel.length() > 0)
+        ? pendingAnimationParamLabel.toUpperCase()
+        : "ANIM PARAM";
+      showModal(label + ": " + paramPercent + "%", 1000);
       pendingAnimationSpeed = -1;
-      pendingCloudDensity = -1;
+      pendingAnimationParamValue = -1;
+      pendingAnimationParamLabel = "";
     } else if (pendingAnimationSpeed == -2) {
       
       showModal("CC4: ✗ DISABLED", 1000);
@@ -1053,9 +1137,11 @@ void drawModal() {
       boxWidth = stampImageNames.length * 30 + 10;  
       boxHeight = 40;  
     } else if (modalShowAnimationSelect) {
-      
-      boxWidth = animatedPen.animationTypeNames.length * 30 + 10;  
-      boxHeight = 40;  
+      int animCount = animatedPen.animationTypeNames.length;
+      int cols = min(5, animCount);
+      int rows = (animCount + cols - 1) / cols;
+      boxWidth = cols * 30 + 10;
+      boxHeight = rows * 30 + 20;
     } else {
       float textWidth = lowResCanvas.textWidth(modalMessage);
       boxWidth = textWidth + padding * 2;
@@ -1335,14 +1421,21 @@ void drawModal() {
         }
       }
     } else if (modalShowAnimationSelect) {
-      
+      int count = animatedPen.animationTypeNames.length;
       int boxSize = 24;  
       int boxSpacing = 30;
-      int startX = (int)(modalX + (boxWidth - (animatedPen.animationTypeNames.length * boxSpacing - (boxSpacing - boxSize))) / 2);
+      int cols = min(5, count);
+      int rows = (count + cols - 1) / cols;
+      int totalWidth = cols * boxSpacing - (boxSpacing - boxSize);
+      int totalHeight = rows * boxSpacing - (boxSpacing - boxSize);
+      int startX = (int)(modalX + (boxWidth - totalWidth) / 2);
+      int startY = (int)(modalY + (boxHeight - totalHeight) / 2);
       
-      for (int i = 0; i < animatedPen.animationTypeNames.length; i++) {
-        int boxX = startX + i * boxSpacing;
-        int boxY = (int)(modalY + boxHeight/2 - boxSize/2);
+      for (int i = 0; i < count; i++) {
+        int col = i % cols;
+        int row = i / cols;
+        int boxX = startX + col * boxSpacing;
+        int boxY = startY + row * boxSpacing;
         
         
         if (i == animatedPen.currentAnimationType) {
@@ -1358,15 +1451,8 @@ void drawModal() {
         lowResCanvas.fill(255, opacity);
         lowResCanvas.rect(boxX, boxY, boxSize, boxSize, 6, 6, 6, 6);
         
-        
-        if (i == 0) {  
-          lowResCanvas.noStroke();
-          lowResCanvas.fill(150, 150, 150, opacity * 0.8);  
-          
-          lowResCanvas.ellipse(boxX + boxSize/2 - 4, boxY + boxSize/2 + 3, 10, 10);
-          lowResCanvas.ellipse(boxX + boxSize/2 + 4, boxY + boxSize/2 + 3, 10, 10);
-          lowResCanvas.ellipse(boxX + boxSize/2, boxY + boxSize/2 - 2, 12, 12);
-        }
+        float iconOpacity = opacity / 255.0f;
+        animatedPen.drawTypeIcon(lowResCanvas, i, boxX + boxSize / 2.0f, boxY + boxSize / 2.0f, boxSize * 0.8f, iconOpacity);
         
       }
       
@@ -1397,47 +1483,24 @@ void drawLowResUI() {
   if (currentPenMode == PEN_MODE_ANIMATION) {
     
     float time = millis() * 0.001;
-    float pulseAmount = sin(time * 3) * 0.2;  
+    float pulseAmount = sin(time * 3) * 0.15;  
     float baseSize = animationSize;
-    float pulseSize = baseSize + (baseSize * pulseAmount);
+    float pulseSize = baseSize * (1.0f + pulseAmount);
+    float previewOpacity = 0.9f;
     
-    if (isZoomed && !isSelectingZoom) {
-      float canvasX = (lowResMouseX - zoomOffsetX) / zoomScale;
-      float canvasY = (lowResMouseY - zoomOffsetY) / zoomScale;
-      
-      lowResCanvas.pushMatrix();
-      lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
-      lowResCanvas.scale(zoomScale);
-      
-      
-      float cloudScale = pulseSize / 20.0;
-      
-      
-      lowResCanvas.stroke(0, 0, 0, 150);  
-      lowResCanvas.strokeWeight(1);
-      
-      lowResCanvas.fill(200, 200, 200, 80);  
-      
-      
-      lowResCanvas.ellipse(canvasX - 5 * cloudScale, canvasY + 3 * cloudScale, pulseSize * 0.7 * 1.5, pulseSize * 0.7 * 0.7);
-      lowResCanvas.ellipse(canvasX + 5 * cloudScale, canvasY + 3 * cloudScale, pulseSize * 0.7 * 1.5, pulseSize * 0.7 * 0.7);
-      lowResCanvas.ellipse(canvasX, canvasY - 3 * cloudScale, pulseSize * 0.8 * 1.5, pulseSize * 0.8 * 0.7);
-      
-      lowResCanvas.popMatrix();
-    } else if (!isSelectingZoom) {
-      
-      float cloudScale = pulseSize / 20.0;
-      
-      
-      lowResCanvas.stroke(0, 0, 0, 150);  
-      lowResCanvas.strokeWeight(1);
-      
-      lowResCanvas.fill(200, 200, 200, 80);  
-      
-      
-      lowResCanvas.ellipse(lowResMouseX - 5 * cloudScale, lowResMouseY + 3 * cloudScale, pulseSize * 0.7 * 1.5, pulseSize * 0.7 * 0.7);
-      lowResCanvas.ellipse(lowResMouseX + 5 * cloudScale, lowResMouseY + 3 * cloudScale, pulseSize * 0.7 * 1.5, pulseSize * 0.7 * 0.7);
-      lowResCanvas.ellipse(lowResMouseX, lowResMouseY - 3 * cloudScale, pulseSize * 0.8 * 1.5, pulseSize * 0.8 * 0.7);
+    if (!isSelectingZoom) {
+      if (isZoomed) {
+        float canvasX = (lowResMouseX - zoomOffsetX) / zoomScale;
+        float canvasY = (lowResMouseY - zoomOffsetY) / zoomScale;
+        
+        lowResCanvas.pushMatrix();
+        lowResCanvas.translate(zoomOffsetX, zoomOffsetY);
+        lowResCanvas.scale(zoomScale);
+        animatedPen.drawTypePreview(lowResCanvas, animatedPen.currentAnimationType, canvasX, canvasY, pulseSize, previewOpacity);
+        lowResCanvas.popMatrix();
+      } else {
+        animatedPen.drawTypePreview(lowResCanvas, animatedPen.currentAnimationType, lowResMouseX, lowResMouseY, pulseSize, previewOpacity);
+      }
     }
   } else if (currentPenMode == PEN_MODE_IMAGE) {
     
@@ -1600,7 +1663,13 @@ void mousePressed() {
         canvasY = mouseY / displayScale;
       }
       
-      
+      float globalY = canvasY + scrollY;
+      int chunkY = ((int)globalY / CHUNK_HEIGHT) * CHUNK_HEIGHT;
+      boolean chunkExists = chunkIndexMap.containsKey(chunkY);
+      if (!chunkExists) {
+        createChunk(chunkY);
+      }
+      saveUndoState();
       animatedPen.addAnimation(canvasX, canvasY, scrollY, animationSize);
       isDrawing = false; 
     } else if (currentPenMode == PEN_MODE_DEFAULT && lineCanvas != null) {
@@ -1614,6 +1683,7 @@ void mousePressed() {
         canvasY = mouseY / displayScale + scrollY;
       }
       
+      saveUndoState();
       lineCanvas.startStroke(canvasX, canvasY);
       if (currentColorIndex == 4) {
         lineCanvas.setColorAndRainbow(palette[currentColorIndex], true);
@@ -2180,12 +2250,14 @@ class MidiReceiver implements Receiver {
             println("MIDI CC2: value=" + value + " → Image = " + stampImageNames[newImageIndex]);
           } else if (currentPenMode == PEN_MODE_ANIMATION) {
             
-            
-            
-            println("MIDI CC2: value=" + value + " → Animation = CLOUD (only type available)");
-            
-            
-            showAnimationTypeModal();
+            if (animatedPen != null && animatedPen.animationTypeNames.length > 0) {
+              int maxIndex = animatedPen.animationTypeNames.length - 1;
+              int newType = (int)map(value, 0, 127, 0, maxIndex);
+              newType = constrain(newType, 0, maxIndex);
+              animatedPen.setAnimationType(newType);
+              println("MIDI CC2: value=" + value + " → Animation = " + animatedPen.getTypeName(newType));
+              showAnimationTypeModal();
+            }
           } else {
             
             
@@ -2251,21 +2323,17 @@ class MidiReceiver implements Receiver {
             println("MIDI CC4: value=" + value + " → Line animation speed = " + speedPercent + "%");
           } else if (currentPenMode == PEN_MODE_ANIMATION) {
             
-            float newCloudDensity = value / 127.0;  
-            newCloudDensity = constrain(newCloudDensity, 0, 1.0);
-            
+            float newParam = value / 127.0f;  
+            newParam = constrain(newParam, 0, 1.0);
             
             if (animatedPen != null) {
-              animatedPen.setCloudDensity(newCloudDensity);
+              animatedPen.setAnimationParameter(newParam);
+              pendingAnimationSpeed = -3;
+              pendingAnimationParamValue = newParam;
+              pendingAnimationParamLabel = animatedPen.getCurrentParamLabel();
+              int percent = (int)(newParam * 100);
+              println("MIDI CC4: value=" + value + " → " + pendingAnimationParamLabel + " = " + percent + "%");
             }
-            
-            
-            pendingAnimationSpeed = -3;  
-            pendingCloudDensity = newCloudDensity;  
-            
-            
-            int densityPercent = (int)(newCloudDensity * 100);
-            println("MIDI CC4: value=" + value + " → Cloud density = " + densityPercent + "%");
           } else {
             
             pendingAnimationSpeed = -2;  
@@ -2513,8 +2581,3 @@ void saveCanvasCallback(File selection) {
   showModal("EXPORTED: " + displayName, 2000);
   println("Exported canvas to: " + filename);
 }
-
-
-
-
-
