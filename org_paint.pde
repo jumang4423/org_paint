@@ -1133,9 +1133,15 @@ void drawModal() {
     float boxWidth, boxHeight;
     
     if (modalShowColorPalette) {
-      
-      boxWidth = 180;  
-      boxHeight = 30;  
+      int boxSize = 20;
+      int boxSpacing = 30;
+      int colorCount = colorNames.length;
+      int cols = min(5, colorCount);
+      int rows = (colorCount + cols - 1) / cols;
+      int totalWidth = cols * boxSpacing - (boxSpacing - boxSize);
+      int totalHeight = rows * boxSpacing - (boxSpacing - boxSize);
+      boxWidth = max(180, totalWidth + padding * 2);
+      boxHeight = totalHeight + padding * 2;
     } else if (modalShowBrush) {
       
       boxWidth = 80;  
