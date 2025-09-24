@@ -2049,9 +2049,6 @@ void saveAndPrint(boolean printToReceipt) {
   println("Saved: " + filename + " (" + CANVAS_WIDTH + "x" + (maxY-minY) + ")");
   
   
-  String timestampedFilename = "glsl_paint_" + millis() + ".png";
-  finalImage.save(timestampedFilename);
-  
   
   showModal("SAVED: " + filename, 2000);
   

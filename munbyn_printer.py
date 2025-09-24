@@ -159,24 +159,29 @@ class MUNBYNPrinter:
             
             # Don't reset alignment - let each call set its own alignment
     
-    def image(self, img_path, impl='bitImageRaster'):
+    def image(self, img_path, impl='bitImageRaster', target_width=576):
         """
         Print image
         
         Args:
             img_path: Path to image file
             impl: Implementation method ('bitImageRaster' or 'graphics')
+            target_width: Desired width in pixels (default 576 for full-width)
         """
         if self.printer:
             try:
                 # Open and resize image for 80mm width
                 img = Image.open(img_path)
                 
-                # 80mm at 203 DPI = ~640 pixels
-                max_width = 576  # Slightly smaller for margins
-                if img.width > max_width:
-                    ratio = max_width / img.width
-                    new_height = int(img.height * ratio)
+                # Always scale to requested width so assets fill the paper
+                if target_width:
+                    max_width = target_width
+                else:
+                    max_width = 576
+
+                ratio = max_width / img.width
+                if ratio != 1:
+                    new_height = max(1, int(img.height * ratio))
                     img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
                 
                 # Convert to grayscale if needed
@@ -242,7 +247,6 @@ class MUNBYNPrinter:
 # Main function to print the painting
 if __name__ == "__main__":
     import os
-    from datetime import datetime
     
     # Check if image file exists
     img_path = "output.png"
@@ -256,27 +260,35 @@ if __name__ == "__main__":
     try:
         # Initialize printer
         printer = MUNBYNPrinter(connection_type='usb')
-        
-        # Print header
-        printer.text("== Org Paint ==\n", align='center', width=2, height=2)
-        printer.text(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n", align='center')
-        printer.feed(1)
-        
-        # Print the image
+
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        assets_dir = os.path.join(script_dir, "data")
+
+        def print_asset(filename):
+            """Print a static asset from the data directory if it exists."""
+            asset_path = os.path.join(assets_dir, filename)
+            if not os.path.exists(asset_path):
+                print(f"Warning: {filename} not found at {asset_path}")
+                return
+            printer.image(asset_path)
+
+        # Print static assets and drawing in the requested order
+        print_asset("logo.png")
+        print_asset("name.png")
+        print_asset("top.png")
+
         printer.image(img_path)
-        
-        # Print footer
-        printer.feed(1)
-        printer.text("Generated with Processing (CPU renderer)\n", align='center', font='b')
-        printer.text("576px thermal printer width\n", align='center', font='b')
-        
-        # Cut paper
+
+        print_asset("bottom.png")
+        print_asset("ty.png")
+
         printer.feed(3)
+
         printer.cut()
-        
+
         # Close connection
         printer.close()
-        
+
         print(f"Successfully printed {img_path}")
         
     except Exception as e:
