@@ -250,12 +250,10 @@ class CloudAnimation extends AnimationInstance {
         // Draw cloud particle as horizontal ellipse with black border
         float alpha = p.alpha * (1.0 - p.age / p.maxAge);
         
-        // Black border
-        canvas.stroke(0, 0, 0, alpha * 255); // Black border with same alpha
+        // Gray border with no interior fill
+        canvas.stroke(160, 160, 160, alpha * 255);
         canvas.strokeWeight(1);
-        
-        // Lighter gray fill (200 instead of 150)
-        canvas.fill(200, 200, 200, alpha * 150); // Lighter gray, more transparent
+        canvas.noFill();
         
         // Horizontal ellipse (wider than tall)
         canvas.ellipse(p.x, drawY, p.size * 1.5, p.size * 0.7);
