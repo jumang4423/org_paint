@@ -1,3 +1,12 @@
+// Shared celebration palette used by multiple animation types
+final color[] CELEBRATION_COLORS = {
+  0xFF94A1FF,
+  0xFF6ED4E3,
+  0xFFD4F357,
+  0xFFFFA020,
+  0xFFBEC5BD
+};
+
 // AnimatedPen class - manages particle animations placed on canvas
 class AnimatedPen {
   ArrayList<AnimationInstance> animations;
@@ -189,6 +198,8 @@ class AnimatedPen {
     canvas.pushStyle();
     float alpha = constrain(opacity, 0, 1);
 
+    color[] theme = CELEBRATION_COLORS;
+
     switch(type) {
       case ANIM_CLOUD:
         canvas.noFill();
@@ -199,27 +210,32 @@ class AnimatedPen {
         canvas.ellipse(centerX, centerY - size * 0.15f, size, size * 0.55f);
         break;
       case ANIM_STAR:
-        canvas.stroke(255, 220, 140, alpha * 255);
+        color starPrimary = theme[0];
+        color starAccent = theme[1];
+        color starHighlight = theme[2];
+        canvas.stroke(red(starPrimary), green(starPrimary), blue(starPrimary), alpha * 255);
         canvas.strokeWeight(1.4f);
         canvas.line(centerX - size * 0.5f, centerY, centerX + size * 0.5f, centerY);
         canvas.line(centerX, centerY - size * 0.5f, centerX, centerY + size * 0.5f);
-        canvas.stroke(255, 150, 220, alpha * 255);
+        canvas.stroke(red(starAccent), green(starAccent), blue(starAccent), alpha * 255);
         canvas.strokeWeight(1);
         canvas.line(centerX - size * 0.35f, centerY - size * 0.35f, centerX + size * 0.35f, centerY + size * 0.35f);
         canvas.line(centerX - size * 0.35f, centerY + size * 0.35f, centerX + size * 0.35f, centerY - size * 0.35f);
         canvas.noStroke();
-        canvas.fill(255, 255, 255, alpha * 220);
+        canvas.fill(red(starHighlight), green(starHighlight), blue(starHighlight), alpha * 220);
         canvas.ellipse(centerX, centerY, size * 0.3f, size * 0.3f);
         break;
       case ANIM_RIBBON:
         canvas.noFill();
-        canvas.stroke(255, 180, 220, alpha * 255);
+        color ribbonPrimary = theme[1];
+        color ribbonTrim = theme[3];
+        canvas.stroke(red(ribbonPrimary), green(ribbonPrimary), blue(ribbonPrimary), alpha * 255);
         canvas.strokeWeight(2);
         canvas.bezier(centerX - size * 0.5f, centerY - size * 0.2f,
                       centerX - size * 0.2f, centerY - size * 0.6f,
                       centerX + size * 0.2f, centerY + size * 0.6f,
                       centerX + size * 0.5f, centerY + size * 0.2f);
-        canvas.stroke(180, 220, 255, alpha * 230);
+        canvas.stroke(red(ribbonTrim), green(ribbonTrim), blue(ribbonTrim), alpha * 230);
         canvas.strokeWeight(1.2f);
         canvas.bezier(centerX - size * 0.55f, centerY + size * 0.3f,
                       centerX - size * 0.1f, centerY,
@@ -240,13 +256,16 @@ class AnimatedPen {
         break;
       case ANIM_CANDY:
         canvas.noStroke();
-        canvas.fill(255, 120, 170, alpha * 230);
+        color candyShell = theme[3];
+        color candyWrapper = theme[0];
+        color candyAccent = theme[2];
+        canvas.fill(red(candyShell), green(candyShell), blue(candyShell), alpha * 230);
         canvas.ellipse(centerX - size * 0.25f, centerY - size * 0.1f, size * 0.35f, size * 0.35f);
-        canvas.fill(255, 200, 90, alpha * 230);
+        canvas.fill(red(candyAccent), green(candyAccent), blue(candyAccent), alpha * 230);
         canvas.rectMode(CENTER);
         canvas.rect(centerX + size * 0.2f, centerY + size * 0.05f, size * 0.35f, size * 0.35f, size * 0.1f);
         canvas.rectMode(CORNER);
-        canvas.fill(255, 255, 255, alpha * 200);
+        canvas.fill(red(candyWrapper), green(candyWrapper), blue(candyWrapper), alpha * 200);
         canvas.ellipse(centerX - size * 0.15f, centerY - size * 0.2f, size * 0.18f, size * 0.18f);
         break;
       case ANIM_FIREFLY:
@@ -262,13 +281,16 @@ class AnimatedPen {
         break;
       case ANIM_CONFETTI:
         canvas.noStroke();
-        canvas.fill(255, 110, 170, alpha * 255);
+        color confettiStrip = theme[0];
+        color confettiTriangle = theme[1];
+        color confettiBar = theme[3];
+        canvas.fill(red(confettiStrip), green(confettiStrip), blue(confettiStrip), alpha * 255);
         canvas.rect(centerX - size * 0.4f, centerY - size * 0.3f, size * 0.2f, size * 0.6f);
-        canvas.fill(120, 200, 255, alpha * 255);
+        canvas.fill(red(confettiTriangle), green(confettiTriangle), blue(confettiTriangle), alpha * 255);
         canvas.triangle(centerX + size * 0.05f, centerY - size * 0.35f,
                         centerX + size * 0.35f, centerY - size * 0.05f,
                         centerX - size * 0.05f, centerY + size * 0.05f);
-        canvas.fill(255, 200, 90, alpha * 255);
+        canvas.fill(red(confettiBar), green(confettiBar), blue(confettiBar), alpha * 255);
         canvas.rect(centerX - size * 0.15f, centerY + size * 0.1f, size * 0.45f, size * 0.18f);
         break;
       case ANIM_CATER:
@@ -294,6 +316,7 @@ class AnimatedPen {
   void drawTypePreview(PGraphics canvas, int type, float centerX, float centerY, float baseSize, float opacity) {
     canvas.pushStyle();
     float alpha = constrain(opacity, 0, 1);
+    color[] theme = CELEBRATION_COLORS;
 
     switch(type) {
       case ANIM_CLOUD:
@@ -306,20 +329,23 @@ class AnimatedPen {
         break;
       case ANIM_STAR:
         drawTypeIcon(canvas, type, centerX, centerY, baseSize, alpha);
-        canvas.stroke(255, 200, 255, alpha * 160);
+        color sparkleTrail = theme[4];
+        canvas.stroke(red(sparkleTrail), green(sparkleTrail), blue(sparkleTrail), alpha * 160);
         canvas.strokeWeight(1);
         canvas.ellipse(centerX + baseSize * 0.6f, centerY - baseSize * 0.2f, baseSize * 0.3f, baseSize * 0.3f);
         canvas.ellipse(centerX - baseSize * 0.65f, centerY + baseSize * 0.3f, baseSize * 0.25f, baseSize * 0.25f);
         break;
       case ANIM_RIBBON:
         canvas.noFill();
-        canvas.stroke(255, 160, 220, alpha * 240);
+        color ribbonPrimary = theme[1];
+        color ribbonAccent = theme[3];
+        canvas.stroke(red(ribbonPrimary), green(ribbonPrimary), blue(ribbonPrimary), alpha * 240);
         canvas.strokeWeight(3);
         canvas.bezier(centerX - baseSize, centerY - baseSize * 0.4f,
                       centerX - baseSize * 0.3f, centerY - baseSize,
                       centerX + baseSize * 0.3f, centerY + baseSize,
                       centerX + baseSize, centerY + baseSize * 0.4f);
-        canvas.stroke(190, 220, 255, alpha * 220);
+        canvas.stroke(red(ribbonAccent), green(ribbonAccent), blue(ribbonAccent), alpha * 220);
         canvas.strokeWeight(2);
         canvas.bezier(centerX - baseSize, centerY + baseSize * 0.4f,
                       centerX - baseSize * 0.1f, centerY,
@@ -342,16 +368,19 @@ class AnimatedPen {
         break;
       case ANIM_CANDY:
         canvas.noStroke();
-        canvas.fill(255, 120, 170, alpha * 230);
+        color candyShell = theme[3];
+        color candyWrapper = theme[0];
+        color candyAccent = theme[2];
+        canvas.fill(red(candyShell), green(candyShell), blue(candyShell), alpha * 230);
         canvas.ellipse(centerX - baseSize * 0.5f, centerY - baseSize * 0.15f, baseSize * 0.8f, baseSize * 0.8f);
-        canvas.fill(120, 200, 255, alpha * 230);
+        canvas.fill(red(candyWrapper), green(candyWrapper), blue(candyWrapper), alpha * 230);
         canvas.beginShape();
         canvas.vertex(centerX + baseSize * 0.45f, centerY - baseSize * 0.6f);
         canvas.vertex(centerX + baseSize * 0.9f, centerY);
         canvas.vertex(centerX + baseSize * 0.45f, centerY + baseSize * 0.6f);
         canvas.vertex(centerX + baseSize * 0.1f, centerY);
         canvas.endShape(CLOSE);
-        canvas.fill(255, 200, 90, alpha * 230);
+        canvas.fill(red(candyAccent), green(candyAccent), blue(candyAccent), alpha * 230);
         canvas.beginShape();
         canvas.vertex(centerX, centerY + baseSize * 0.6f);
         canvas.bezierVertex(centerX + baseSize * 0.5f, centerY + baseSize * 0.1f,
@@ -379,15 +408,19 @@ class AnimatedPen {
         break;
       case ANIM_CONFETTI:
         canvas.noStroke();
-        canvas.fill(255, 110, 170, alpha * 255);
+        color confettiStrip = theme[0];
+        color confettiTriangle = theme[1];
+        color confettiBar = theme[3];
+        color confettiExtra = theme[2];
+        canvas.fill(red(confettiStrip), green(confettiStrip), blue(confettiStrip), alpha * 255);
         canvas.rect(centerX - baseSize * 0.9f, centerY - baseSize * 0.2f, baseSize * 0.3f, baseSize * 1.0f);
-        canvas.fill(120, 200, 255, alpha * 255);
+        canvas.fill(red(confettiTriangle), green(confettiTriangle), blue(confettiTriangle), alpha * 255);
         canvas.triangle(centerX - baseSize * 0.2f, centerY - baseSize * 0.5f,
                         centerX + baseSize * 0.5f, centerY - baseSize * 0.2f,
                         centerX - baseSize * 0.05f, centerY + baseSize * 0.1f);
-        canvas.fill(255, 200, 90, alpha * 255);
+        canvas.fill(red(confettiBar), green(confettiBar), blue(confettiBar), alpha * 255);
         canvas.rect(centerX - baseSize * 0.3f, centerY + baseSize * 0.3f, baseSize * 0.8f, baseSize * 0.25f);
-        canvas.fill(150, 255, 200, alpha * 255);
+        canvas.fill(red(confettiExtra), green(confettiExtra), blue(confettiExtra), alpha * 255);
         canvas.triangle(centerX + baseSize * 0.4f, centerY + baseSize * 0.1f,
                         centerX + baseSize * 0.9f, centerY + baseSize * 0.5f,
                         centerX + baseSize * 0.25f, centerY + baseSize * 0.6f);
@@ -967,14 +1000,9 @@ class SparkleParticle {
     age = random(0, 200);
     maxAge = random(1500, 2600);
 
-    color[] palette = {
-      color(255, 240, 150),
-      color(255, 210, 240),
-      color(190, 220, 255),
-      color(255, 255, 220)
-    };
+    color[] palette = CELEBRATION_COLORS;
     mainColor = palette[(int)random(palette.length)];
-    glowColor = color(255, 255, 255);
+    glowColor = lerpColor(mainColor, 0xFFFFFFFF, 0.35f);
   }
 
   void update(float deltaSeconds, float timeScale, float baseSize) {
@@ -1119,14 +1147,9 @@ class RibbonPiece {
     age = random(0, 300);
     maxAge = random(3200, 5200);
 
-    color[] palette = {
-      color(255, 180, 220),
-      color(180, 220, 255),
-      color(255, 210, 170),
-      color(220, 255, 200)
-    };
+    color[] palette = CELEBRATION_COLORS;
     baseColor = palette[(int)random(palette.length)];
-    trimColor = lerpColor(baseColor, color(255), 0.25f);
+    trimColor = lerpColor(baseColor, 0xFFFFFFFF, 0.25f);
   }
 
   void update(float deltaSeconds, float timeScale, float baseSize) {
@@ -1462,13 +1485,7 @@ class CandyPiece {
     age = random(0, 200);
     maxAge = random(2000, 3600);
 
-    color[] palette = {
-      color(255, 110, 150),
-      color(255, 190, 80),
-      color(120, 200, 255),
-      color(190, 255, 120),
-      color(255, 150, 220)
-    };
+    color[] palette = CELEBRATION_COLORS;
     fillColor = palette[(int)random(palette.length)];
   }
 
@@ -1776,13 +1793,7 @@ class ConfettiPiece {
     maxAge = random(1200, 2200);
     shape = (int)random(3);
 
-    color[] palette = {
-      color(255, 105, 180),
-      color(255, 220, 120),
-      color(120, 200, 255),
-      color(150, 255, 180),
-      color(255, 170, 220)
-    };
+    color[] palette = CELEBRATION_COLORS;
     baseColor = palette[(int)random(palette.length)];
   }
 

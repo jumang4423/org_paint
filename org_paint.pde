@@ -49,8 +49,17 @@ String[] penModeNames = {"DEFAULT", "REMOVE", "IMAGE", "ANIMATION"};
 
 
 int currentColorIndex = 0;  
-color[] palette = new color[5];
-String[] colorNames = {"BLACK", "GREEN", "YELLOW", "LIGHT GRAY", "RAINBOW"};
+String[] colorNames = {
+  "#94A1FF",
+  "#6ED4E3",
+  "#D4F357",
+  "#FFA020",
+  "#BEC5BD",
+  "BLACK",
+  "GREEN",
+  "RAINBOW"
+};
+color[] palette = new color[colorNames.length];
 
 
 int[][] rainbowDitherMatrix;
@@ -163,11 +172,14 @@ void setup() {
   redoChunkTextures = new ArrayList<PGraphics>();
   
   
-  palette[0] = color(0, 0, 0);       
-  palette[1] = color(0, 255, 0);     
-  palette[2] = color(200, 200, 0);   
-  palette[3] = color(192, 192, 192); 
-  palette[4] = color(255, 0, 255);   
+  palette[0] = color(0x94, 0xA1, 0xFF); 
+  palette[1] = color(0x6E, 0xD4, 0xE3);
+  palette[2] = color(0xD4, 0xF3, 0x57);
+  palette[3] = color(0xFF, 0xA0, 0x20);
+  palette[4] = color(0xBE, 0xC5, 0xBD);
+  palette[5] = color(0, 0, 0);       
+  palette[6] = color(0, 255, 0);     
+  palette[7] = color(255, 0, 255);   // placeholder color for rainbow preview
   
   rainbowDitherMatrix = new int[][] {
     {0, 8, 2, 10},
@@ -699,7 +711,7 @@ void draw() {
       
       lineCanvas.addPoint(globalMouseX, globalMouseY);
       
-      if (currentColorIndex == 4) {
+      if (currentColorIndex == palette.length - 1) {
         lineCanvas.setColorAndRainbow(palette[currentColorIndex], true);
       } else {
         lineCanvas.setColorAndRainbow(palette[currentColorIndex], false);
@@ -1149,36 +1161,19 @@ void drawModal() {
     }
     
     
-    float modalX, modalY;
-    
-    
-    if (modalShowColorPalette || modalShowPenMode || modalShowImagePreview || modalShowAnimationSelect) {
-      
-      modalX = (CANVAS_WIDTH - boxWidth) / 2;
-      modalY = (SCREEN_HEIGHT - boxHeight) / 2;
-    } else {
-      
-      float lowResMouseX = mouseX / displayScale;
-      float lowResMouseY = mouseY / displayScale;
-      boolean mouseInRightHalf = lowResMouseX > CANVAS_WIDTH / 2;
-      boolean mouseInBottomHalf = lowResMouseY > SCREEN_HEIGHT / 2;
-      
-      if (mouseInRightHalf) {
-        
-        modalX = 4;
-      } else {
-        
-        modalX = CANVAS_WIDTH - boxWidth - 4;
-      }
-      
-      if (mouseInBottomHalf) {
-        
-        modalY = 4;
-      } else {
-        
-        modalY = SCREEN_HEIGHT - boxHeight - 4;
-      }
-    }
+    float lowResMouseX = mouseX / displayScale;
+    float lowResMouseY = mouseY / displayScale;
+    boolean mouseInRightHalf = lowResMouseX > CANVAS_WIDTH / 2;
+    boolean mouseInBottomHalf = lowResMouseY > SCREEN_HEIGHT / 2;
+
+    float margin = 4;
+    float leftX = margin;
+    float rightX = max(margin, CANVAS_WIDTH - boxWidth - margin);
+    float topY = margin;
+    float bottomY = max(margin, SCREEN_HEIGHT - boxHeight - margin);
+
+    float modalX = mouseInRightHalf ? leftX : rightX;
+    float modalY = mouseInBottomHalf ? topY : bottomY;
     
     
     float time = millis() * 0.001;  
@@ -1240,14 +1235,22 @@ void drawModal() {
         
         int boxSize = 20;
         int boxSpacing = 30;
-        int startX = (int)(modalX + (boxWidth - (5 * boxSpacing - (boxSpacing - boxSize))) / 2);
+        int colorCount = colorNames.length;
+        int cols = min(5, colorCount);
+        int rows = (colorCount + cols - 1) / cols;
+        int totalWidth = cols * boxSpacing - (boxSpacing - boxSize);
+        int totalHeight = rows * boxSpacing - (boxSpacing - boxSize);
+        int startX = (int)(modalX + (boxWidth - totalWidth) / 2);
+        int startY = (int)(modalY + (boxHeight - totalHeight) / 2);
         
-        for (int i = 0; i < 5; i++) {
-          int boxX = startX + i * boxSpacing;
-          int boxY = (int)(modalY + boxHeight/2 - boxSize/2);
+        for (int i = 0; i < colorCount; i++) {
+          int col = i % cols;
+          int row = i / cols;
+          int boxX = startX + col * boxSpacing;
+          int boxY = startY + row * boxSpacing;
           
           
-          if (i == 4) {
+          if (i == colorCount - 1) {
             
             
             float rainbowTime = millis() * 0.01;
@@ -1530,7 +1533,7 @@ void drawLowResUI() {
     color brushColor;
     if (currentPenMode == PEN_MODE_REMOVE) {
       brushColor = color(255, 0, 0);  
-    } else if (currentColorIndex == 4) {
+    } else if (currentColorIndex == palette.length - 1) {
       
       float brushTime = millis() * 0.01;
       brushColor = color(
@@ -1685,7 +1688,7 @@ void mousePressed() {
       
       saveUndoState();
       lineCanvas.startStroke(canvasX, canvasY);
-      if (currentColorIndex == 4) {
+      if (currentColorIndex == palette.length - 1) {
         lineCanvas.setColorAndRainbow(palette[currentColorIndex], true);
       } else {
         lineCanvas.setColorAndRainbow(palette[currentColorIndex], false);
@@ -2259,7 +2262,8 @@ class MidiReceiver implements Receiver {
             
             
             
-            int newColorIndex = constrain(value * 5 / 128, 0, 4);
+            int paletteSize = colorNames.length;
+            int newColorIndex = constrain(value * paletteSize / 128, 0, paletteSize - 1);
             
             
             pendingColorIndex = newColorIndex;
