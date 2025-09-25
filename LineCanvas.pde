@@ -293,10 +293,13 @@ class LineSegment {
   float animationIntensity; // Store the intensity when this line was created
   float lineWaveTime; // Per-line animation time
   boolean isRainbow = false; // If true, color cycles over time
+  float rainbowHueTime; // Separate hue clock so color can drift even when animation stops
   static final float CHAOS_NOISE_SCALE = 0.02f;
   static final float CHAOS_TIME_SCALE = 0.6f;
   static final float CHAOS_MAGNITUDE = 1.5f;
   static final float CHAOS_FLICKER_SPEED = 7.5f;
+  static final float RAINBOW_BASE_SPEED = 0.015f;
+  static final float RAINBOW_SPEED_RANGE = 0.2f - RAINBOW_BASE_SPEED;
   PVector offsetScratch = new PVector();
   
   LineSegment(float x, float y) {
@@ -336,12 +339,19 @@ class LineSegment {
     directionX = random(-1, 1);  // Random X direction
     directionY = random(-1, 1);  // Random Y direction
     lineWaveTime = 0; // Start at 0 for each line
+    rainbowHueTime = random(1.0f); // Start hue at random point to avoid uniform colors
     // animationIntensity is already set by constructor, don't override it here
   }
   
   // Update this line's animation time based on its own intensity
   void updateAnimation(float deltaTime) {
     lineWaveTime += deltaTime * animationIntensity;
+
+    float hueSpeed = RAINBOW_BASE_SPEED + animationIntensity * RAINBOW_SPEED_RANGE;
+    rainbowHueTime += deltaTime * hueSpeed;
+    if (rainbowHueTime > 1.0f) {
+      rainbowHueTime -= floor(rainbowHueTime);
+    }
   }
   
   void computeOffsetForPoint(PVector point, PVector out, float amplitude, float frequency) {
@@ -500,8 +510,8 @@ class LineSegment {
       // Set dynamic rainbow stroke color if enabled
       if (isRainbow) {
         // Cycle hue over time; offset by randomSeed so lines differ
-        float h = (lineWaveTime * 0.2 + (randomSeed * 0.137)) % 1.0; // 0..1
-        if (h < 0) h += 1.0;
+        float h = (rainbowHueTime + (randomSeed * 0.137f)) % 1.0f; // 0..1
+        if (h < 0) h += 1.0f;
         canvas.colorMode(HSB, 1.0);
         canvas.stroke(h, 1.0, 1.0);
         canvas.colorMode(RGB, 255);
@@ -517,8 +527,8 @@ class LineSegment {
     
     // Set stroke color (dynamic if rainbow)
     if (isRainbow) {
-      float h = (lineWaveTime * 0.2 + (randomSeed * 0.137)) % 1.0;
-      if (h < 0) h += 1.0;
+      float h = (rainbowHueTime + (randomSeed * 0.137f)) % 1.0f;
+      if (h < 0) h += 1.0f;
       canvas.colorMode(HSB, 1.0);
       canvas.stroke(h, 1.0, 1.0);
       canvas.colorMode(RGB, 255);
