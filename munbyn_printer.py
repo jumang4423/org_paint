@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import random
 from escpos.printer import Usb, Network
 from PIL import Image
 import usb.core
@@ -280,6 +281,31 @@ if __name__ == "__main__":
         printer.image(img_path)
 
         print_asset("bottom.png")
+
+        # Lucky item section
+        lucky_items = [
+            # eggeye items
+            "ゆでたまご（半熟）",
+            "ゆでたまご（固茹で）",
+            "獅子舞",
+            "わさびソフトクリーム",
+            "丸いドアノブ",
+            "紙風船",
+            "バスタオル",
+            "横線が入った石",
+            "糸こんにゃく",
+            "車輪",
+            "もちもち君",
+            # jumango items
+            "テプラ",
+            ""
+        ]
+
+        selected_item = random.choice(lucky_items)
+
+        printer.text("☆*:.｡. ラッキーアイテム .｡.:*☆\n", align='center')
+        printer.text(f"{selected_item}\n", align='center', bold=True)
+
         print_asset("ty.png")
 
         printer.feed(3)

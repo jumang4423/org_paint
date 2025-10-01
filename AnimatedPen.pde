@@ -126,22 +126,20 @@ class AnimatedPen {
   }
   
   // Remove animations that intersect with eraser rectangle
-  void eraseAtRect(float x, float y, float width, float height, float scrollY) {
-    float globalY = y + scrollY;
+  void eraseAtRect(float x, float y, float width, float height) {
     for (int i = animations.size() - 1; i >= 0; i--) {
       AnimationInstance anim = animations.get(i);
-      if (anim.intersectsRect(x, globalY, width, height)) {
+      if (anim.intersectsRect(x, y, width, height)) {
         animations.remove(i);
       }
     }
   }
   
   // Remove animations that intersect with eraser circle (legacy)
-  void eraseAt(float x, float y, float radius, float scrollY) {
-    float globalY = y + scrollY;
+  void eraseAt(float x, float y, float radius) {
     for (int i = animations.size() - 1; i >= 0; i--) {
       AnimationInstance anim = animations.get(i);
-      if (anim.intersects(x, globalY, radius)) {
+      if (anim.intersects(x, y, radius)) {
         animations.remove(i);
       }
     }

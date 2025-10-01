@@ -14,9 +14,9 @@ HashMap<Integer, Integer> chunkIndexMap;
 LineCanvas lineCanvas;
 
 
-final int CANVAS_WIDTH = 576;
-final int CHUNK_HEIGHT = 256;  
-int SCREEN_HEIGHT = 324;  
+final int CANVAS_WIDTH = 320;
+final int CHUNK_HEIGHT = 128;  
+int SCREEN_HEIGHT = 180;  
 final int MAX_CHUNKS = 50;  
 
 
@@ -682,7 +682,7 @@ void draw() {
       
       if (animatedPen != null) {
         
-        animatedPen.eraseAt(globalMouseX, globalMouseY, eraserRadius, scrollY);
+        animatedPen.eraseAt(globalMouseX, globalMouseY, eraserRadius);
       }
       
     }
