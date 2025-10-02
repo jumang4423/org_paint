@@ -4,6 +4,7 @@
 
 import java.io.*;
 import java.util.HashMap;
+import processing.data.IntList;
 import javax.sound.midi.*;
 
 ArrayList<PGraphics> chunkTextures;  
@@ -63,9 +64,12 @@ color[] palette = new color[colorNames.length];
 
 
 int[][] rainbowDitherMatrix;
+int[][] rainbowFadeDitherMatrix;
 color[] rainbowPalette;
-final int RAINBOW_BLOCK_SIZE = 8;
+final int RAINBOW_BLOCK_SIZE = 6;
 final color RAINBOW_HIGHLIGHT_COLOR = 0xFFFFFFFF;
+final float RAINBOW_FADE_HEIGHT = 150.0f;
+final int RAINBOW_FADE_SUBCELL_SIZE = 1;
 
 
 String modalMessage = "";
@@ -188,24 +192,30 @@ void setup() {
     {3, 11, 1, 9},
     {15, 7, 13, 5}
   };
-  rainbowPalette = new color[] {
-    color(255, 255, 255), 
-    color(255, 255, 85),  
-    color(85, 255, 255),  
-    color(255, 85, 255),  
-    color(85, 255, 85),   
-    color(255, 85, 85),   
-    color(85, 85, 255),   
-    color(255, 170, 85),  
-    color(255, 85, 170),  
-    color(170, 255, 85),  
-    color(85, 255, 170),  
-    color(170, 85, 255),  
-    color(255, 255, 170), 
-    color(170, 255, 255), 
-    color(255, 170, 255), 
-    color(170, 170, 255)  
+  rainbowFadeDitherMatrix = new int[][] {
+    {0, 48, 12, 60, 3, 51, 15, 63},
+    {32, 16, 44, 28, 35, 19, 47, 31},
+    {8, 56, 4, 52, 11, 59, 7, 55},
+    {40, 24, 36, 20, 43, 27, 39, 23},
+    {2, 50, 14, 62, 1, 49, 13, 61},
+    {34, 18, 46, 30, 33, 17, 45, 29},
+    {10, 58, 6, 54, 9, 57, 5, 53},
+    {42, 26, 38, 22, 41, 25, 37, 21}
   };
+  IntList rainbowColors = new IntList();
+  for (int i = 0; i < palette.length; i++) {
+    if (i == 5 || i == 7) {
+      continue; // skip black and placeholder magenta for rainbow background
+    }
+    rainbowColors.append(palette[i]);
+  }
+  if (rainbowColors.size() == 0) {
+    rainbowColors.append(color(255));
+  }
+  rainbowPalette = new color[rainbowColors.size()];
+  for (int i = 0; i < rainbowColors.size(); i++) {
+    rainbowPalette[i] = rainbowColors.get(i);
+  }
   
   
   createChunk(0);
@@ -929,6 +939,15 @@ void drawRainbowSection(float yOffset, int height) {
   int ditherRows = ditherMatrix.length;
   int ditherCols = ditherMatrix[0].length;
   float baseY = yOffset + scrollY;
+  int[][] fadeMatrix = rainbowFadeDitherMatrix;
+  int fadeRows = (fadeMatrix != null) ? fadeMatrix.length : 0;
+  int fadeCols = (fadeMatrix != null && fadeMatrix.length > 0) ? fadeMatrix[0].length : 0;
+  int fadeSteps = (fadeRows > 0 && fadeCols > 0) ? fadeRows * fadeCols : 0;
+  int fadeCellSize = RAINBOW_FADE_SUBCELL_SIZE;
+  if (fadeCellSize < 1 || fadeCellSize > RAINBOW_BLOCK_SIZE || (RAINBOW_BLOCK_SIZE % fadeCellSize) != 0) {
+    fadeCellSize = 1;
+  }
+  boolean fadeEnabled = RAINBOW_FADE_HEIGHT > 0.0f && fadeSteps > 0;
 
   lowResCanvas.strokeWeight(1);
   lowResCanvas.noSmooth();
@@ -954,17 +973,58 @@ void drawRainbowSection(float yOffset, int height) {
 
       float drawY = yOffset + y;
       color c = colors[colorIndex];
-
-      lowResCanvas.noStroke();
-      lowResCanvas.fill(c);
-      lowResCanvas.rect(x, drawY, RAINBOW_BLOCK_SIZE, RAINBOW_BLOCK_SIZE);
-
-      if (ditherValue > 0.5) {
-        lowResCanvas.stroke(lerpColor(c, RAINBOW_HIGHLIGHT_COLOR, 0.2f));
-        lowResCanvas.strokeWeight(1);
-        lowResCanvas.line(x, drawY + 2, x + RAINBOW_BLOCK_SIZE, drawY + 2);
-        lowResCanvas.line(x, drawY + 6, x + RAINBOW_BLOCK_SIZE, drawY + 6);
+      boolean handledFade = false;
+      if (fadeEnabled && y < RAINBOW_FADE_HEIGHT) {
         lowResCanvas.noStroke();
+        lowResCanvas.fill(c);
+
+        for (int subY = 0; subY < RAINBOW_BLOCK_SIZE; subY += fadeCellSize) {
+          float localY = y + subY + fadeCellSize * 0.5f;
+          float fadeProgress = constrain(localY / RAINBOW_FADE_HEIGHT, 0.0f, 1.0f);
+          if (fadeProgress <= 0.0f) {
+            continue;
+          }
+
+          float fadeLevel = fadeProgress * fadeSteps;
+          for (int subX = 0; subX < RAINBOW_BLOCK_SIZE; subX += fadeCellSize) {
+            int sampleX = (int)floor((x + subX) / (float)fadeCellSize);
+            int sampleY = (int)floor((drawY + subY) / (float)fadeCellSize);
+            int fadeDy = sampleY % fadeRows;
+            int fadeDx = sampleX % fadeCols;
+            if (fadeDy < 0) {
+              fadeDy += fadeRows;
+            }
+            if (fadeDx < 0) {
+              fadeDx += fadeCols;
+            }
+
+            float threshold = fadeMatrix[fadeDy][fadeDx];
+            if (fadeLevel <= threshold) {
+              continue;
+            }
+
+            float cellX = x + subX;
+            float cellY = drawY + subY;
+            lowResCanvas.rect(cellX, cellY, fadeCellSize, fadeCellSize);
+          }
+        }
+
+        handledFade = true;
+      }
+
+      if (!handledFade) {
+        lowResCanvas.noStroke();
+        lowResCanvas.fill(c);
+        lowResCanvas.rect(x, drawY, RAINBOW_BLOCK_SIZE, RAINBOW_BLOCK_SIZE);
+
+        if (ditherValue > 0.5) {
+          color highlight = lerpColor(c, RAINBOW_HIGHLIGHT_COLOR, 0.2f);
+          lowResCanvas.stroke(highlight);
+          lowResCanvas.strokeWeight(1);
+          lowResCanvas.line(x, drawY + 2, x + RAINBOW_BLOCK_SIZE, drawY + 2);
+          lowResCanvas.line(x, drawY + 6, x + RAINBOW_BLOCK_SIZE, drawY + 6);
+          lowResCanvas.noStroke();
+        }
       }
     }
   }
