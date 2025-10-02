@@ -147,6 +147,7 @@ boolean modalShowAnimationSelect = false;
 
 void setup() {
   fullScreen(JAVA2D);  
+  pixelDensity(1);  
   noSmooth();  
 
   
