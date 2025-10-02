@@ -4,12 +4,14 @@
 
 import java.io.*;
 import java.util.HashMap;
+import java.util.HashSet;
 import processing.data.IntList;
 import javax.sound.midi.*;
 
 ArrayList<PGraphics> chunkTextures;  
 ArrayList<Integer> chunkPositions;
 HashMap<Integer, Integer> chunkIndexMap;  
+HashSet<Integer> chunkContentSet;
 
 
 LineCanvas lineCanvas;
@@ -168,6 +170,7 @@ void setup() {
   chunkTextures = new ArrayList<PGraphics>();
   chunkPositions = new ArrayList<Integer>();
   chunkIndexMap = new HashMap<Integer, Integer>();
+  chunkContentSet = new HashSet<Integer>();
   
   
   lineCanvas = new LineCanvas();
@@ -409,6 +412,8 @@ void performUndo() {
 
   undoLineState = null;
   undoAnimationState = null;
+
+  recomputeChunkContentSet();
 }
 
 
@@ -472,6 +477,8 @@ void performRedo() {
 
   redoLineState = null;
   redoAnimationState = null;
+
+  recomputeChunkContentSet();
 }
 
 void createChunk(int yPos) {
@@ -541,6 +548,7 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
       chunk.imageMode(CENTER);
       chunk.image(stampImages[currentImageIndex], globalMouseX, localMouseY, imageStampSize, imageStampSize);
       chunk.imageMode(CORNER);
+      markChunkHasContent(chunkIndex);
     }
   } else {
     color drawColor = palette[currentColorIndex];
@@ -562,9 +570,52 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
 
     chunk.noStroke();
     chunk.ellipse(globalMouseX, localMouseY, effectiveBrushSize, effectiveBrushSize);
+    markChunkHasContent(chunkIndex);
   }
 
   chunk.endDraw();
+}
+
+boolean chunkHasVisibleContent(PGraphics chunk) {
+  if (chunk == null) {
+    return false;
+  }
+
+  chunk.loadPixels();
+  final int whiteRGB = 0x00FFFFFF;
+
+  for (int i = 0; i < chunk.pixels.length; i++) {
+    if ((chunk.pixels[i] & whiteRGB) != whiteRGB) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void markChunkHasContent(int chunkIndex) {
+  if (chunkIndex < 0 || chunkIndex >= chunkPositions.size()) {
+    return;
+  }
+
+  int chunkY = chunkPositions.get(chunkIndex);
+  chunkContentSet.add(chunkY);
+}
+
+void recomputeChunkContentSet() {
+  chunkContentSet.clear();
+  for (int i = 0; i < chunkPositions.size(); i++) {
+    int chunkY = chunkPositions.get(i);
+    Integer chunkIdx = chunkIndexMap.get(chunkY);
+    if (chunkIdx == null) {
+      continue;
+    }
+
+    PGraphics chunk = chunkTextures.get(chunkIdx);
+    if (chunkHasVisibleContent(chunk)) {
+      chunkContentSet.add(chunkY);
+    }
+  }
 }
 
 void draw() {
@@ -1995,14 +2046,41 @@ void keyPressed() {
 
 
 float getMaxContentY() {
-  if (chunkPositions.isEmpty()) return CHUNK_HEIGHT;  
-  
-  int maxY = 0;
-  for (int chunkY : chunkPositions) {
-    maxY = max(maxY, chunkY + CHUNK_HEIGHT);
+  if (chunkContentSet == null) {
+    return CHUNK_HEIGHT;
   }
-  
-  
+
+  int maxY = Integer.MIN_VALUE;
+  boolean hasContent = false;
+
+  if (!chunkPositions.isEmpty()) {
+    for (int chunkY : chunkPositions) {
+      if (!chunkContentSet.contains(chunkY)) {
+        continue;
+      }
+
+      hasContent = true;
+      maxY = max(maxY, chunkY + CHUNK_HEIGHT);
+    }
+  }
+
+  if (lineCanvas != null && !lineCanvas.lines.isEmpty()) {
+    hasContent = true;
+    maxY = max(maxY, (int)lineCanvas.getMaxY());
+  }
+
+  if (animatedPen != null && animatedPen.animations != null && !animatedPen.animations.isEmpty()) {
+    hasContent = true;
+    for (AnimationInstance anim : animatedPen.animations) {
+      float padding = anim.baseSize * 1.5f;
+      maxY = max(maxY, (int)ceil(anim.originY + padding));
+    }
+  }
+
+  if (!hasContent) {
+    return CHUNK_HEIGHT;
+  }
+
   return maxY + CHUNK_HEIGHT;
 }
 
@@ -2010,38 +2088,61 @@ void saveAndPrint(boolean printToReceipt) {
   println("=== SAVE AND PRINT ===");
   
   
-  boolean hasChunks = !chunkTextures.isEmpty();
   boolean hasLines = (lineCanvas != null && !lineCanvas.lines.isEmpty());
-  
-  if (!hasChunks && !hasLines) {
-    println("Nothing to save");
-    return;
-  }
-  
+  boolean hasChunks = false;
+  boolean hasAnimations = (animatedPen != null && animatedPen.animations != null && !animatedPen.animations.isEmpty());
   
   int minY = Integer.MAX_VALUE;
   int maxY = Integer.MIN_VALUE;
   
-  
-  if (hasChunks) {
+  if (!chunkTextures.isEmpty()) {
     for (int i = 0; i < chunkPositions.size(); i++) {
       int chunkY = chunkPositions.get(i);
-      minY = min(minY, chunkY);
-      maxY = max(maxY, chunkY + CHUNK_HEIGHT);
+      Integer chunkIdx = chunkIndexMap.get(chunkY);
+      if (chunkIdx == null) {
+        continue;
+      }
+
+      PGraphics chunk = chunkTextures.get(chunkIdx);
+      boolean chunkHasContent = chunkHasVisibleContent(chunk);
+      if (chunkHasContent) {
+        hasChunks = true;
+        chunkContentSet.add(chunkY);
+        minY = min(minY, chunkY);
+        maxY = max(maxY, chunkY + CHUNK_HEIGHT);
+      } else {
+        chunkContentSet.remove(chunkY);
+      }
     }
   }
-  
   
   if (hasLines) {
     minY = min(minY, (int)lineCanvas.getMinY());
     maxY = max(maxY, (int)lineCanvas.getMaxY());
   }
-  
+
+  if (hasAnimations) {
+    for (AnimationInstance anim : animatedPen.animations) {
+      float padding = anim.baseSize * 1.5f;
+      int animTop = (int)floor(anim.originY - padding);
+      int animBottom = (int)ceil(anim.originY + padding);
+      minY = min(minY, animTop);
+      maxY = max(maxY, animBottom);
+    }
+  }
+
+  if (!hasChunks && !hasLines && !hasAnimations) {
+    println("Nothing to save");
+    return;
+  }
   
   if (minY == Integer.MAX_VALUE) {
     minY = 0;
     maxY = SCREEN_HEIGHT;
   }
+
+  minY = max(0, minY);
+  maxY = max(maxY, minY + 1);
   
   println("Saving from Y=" + minY + " to Y=" + maxY);
   
@@ -2130,11 +2231,59 @@ void saveAndPrint(boolean printToReceipt) {
 
 
 PImage renderFullCanvasToImage() {
-  int minY = 0;
-  int maxY = (int)getMaxContentY();
-  if (maxY <= minY) {
+  boolean hasLines = (lineCanvas != null && !lineCanvas.lines.isEmpty());
+  boolean hasChunks = false;
+  boolean hasAnimations = (animatedPen != null && animatedPen.animations != null && !animatedPen.animations.isEmpty());
+  int minY = Integer.MAX_VALUE;
+  int maxY = Integer.MIN_VALUE;
+
+  if (!chunkTextures.isEmpty()) {
+    for (int i = 0; i < chunkPositions.size(); i++) {
+      int chunkY = chunkPositions.get(i);
+      Integer chunkIdx = chunkIndexMap.get(chunkY);
+      if (chunkIdx == null) {
+        continue;
+      }
+
+      PGraphics chunk = chunkTextures.get(chunkIdx);
+      boolean chunkHasContent = chunkHasVisibleContent(chunk);
+      if (chunkHasContent) {
+        hasChunks = true;
+        chunkContentSet.add(chunkY);
+        minY = min(minY, chunkY);
+        maxY = max(maxY, chunkY + CHUNK_HEIGHT);
+      } else {
+        chunkContentSet.remove(chunkY);
+      }
+    }
+  }
+
+  if (hasLines) {
+    minY = min(minY, (int)lineCanvas.getMinY());
+    maxY = max(maxY, (int)lineCanvas.getMaxY());
+  }
+
+  if (hasAnimations) {
+    for (AnimationInstance anim : animatedPen.animations) {
+      float padding = anim.baseSize * 1.5f;
+      int animTop = (int)floor(anim.originY - padding);
+      int animBottom = (int)ceil(anim.originY + padding);
+      minY = min(minY, animTop);
+      maxY = max(maxY, animBottom);
+    }
+  }
+
+  if (!hasChunks && !hasLines && !hasAnimations) {
     return null;
   }
+
+  if (minY == Integer.MAX_VALUE) {
+    minY = 0;
+    maxY = SCREEN_HEIGHT;
+  }
+
+  minY = max(0, minY);
+  maxY = max(maxY, minY + 1);
 
   PImage finalImage = createImage(CANVAS_WIDTH, maxY - minY, RGB);
   finalImage.loadPixels();
