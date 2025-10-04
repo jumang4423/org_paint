@@ -6,6 +6,8 @@ from PIL import Image
 import usb.core
 import usb.util
 import sys
+import os
+from tqdm import tqdm
 
 class MUNBYNPrinter:
     """MUNBYN thermal receipt printer (80mm, ESC/POS compatible)"""
@@ -245,9 +247,62 @@ class MUNBYNPrinter:
         if self.printer:
             self.printer.close()
 
+# Reusable helpers
+def print_asset(printer: MUNBYNPrinter, assets_dir: str, filename: str):
+    """Print a static asset from the data directory if it exists."""
+    asset_path = os.path.join(assets_dir, filename)
+    if not os.path.exists(asset_path):
+        print(f"Warning: {filename} not found at {asset_path}")
+        return
+    printer.image(asset_path)
+
+
+def print_result(printer: MUNBYNPrinter, img_path: str, assets_dir: str):
+    """Print the full receipt: header assets, image, lucky item, and footer."""
+    # Print static assets and drawing in the requested order
+    print_asset(printer, assets_dir, "logo.png")
+    print_asset(printer, assets_dir, "name.png")
+    print_asset(printer, assets_dir, "top.png")
+
+    printer.image(img_path)
+
+    print_asset(printer, assets_dir, "bottom.png")
+
+    # Lucky item section
+    lucky_items = [
+        # eggeye items
+        "ゆでたまご（半熟）",
+        "ゆでたまご（固茹で）",
+        "獅子舞",
+        "わさびソフトクリーム",
+        "丸いドアノブ",
+        "紙風船",
+        "バスタオル",
+        "横線が入った石",
+        "糸こんにゃく",
+        "車輪",
+        "もちもち君",
+        # jumango items
+        "テプラ",
+        "グァバジュース",
+        "pot pourri",
+        "1000 レアモノ大図鑑",
+        "サーマルプリンター",
+    ]
+
+    selected_item = random.choice(lucky_items)
+
+    printer.text("☆*:.｡. ラッキーアイテム .｡.:*☆\n", align='center')
+    printer.text(f"{selected_item}\n", align='center', bold=True)
+
+    print_asset(printer, assets_dir, "ty.png")
+
+    printer.feed(3)
+    printer.cut()
+    
+
 # Main function to print the painting
 if __name__ == "__main__":
-    import os
     
     # Check if image file exists
     img_path = "output.png"
@@ -265,52 +320,10 @@ if __name__ == "__main__":
         script_dir = os.path.dirname(os.path.abspath(__file__))
         assets_dir = os.path.join(script_dir, "data")
 
-        def print_asset(filename):
-            """Print a static asset from the data directory if it exists."""
-            asset_path = os.path.join(assets_dir, filename)
-            if not os.path.exists(asset_path):
-                print(f"Warning: {filename} not found at {asset_path}")
-                return
-            printer.image(asset_path)
-
-        # Print static assets and drawing in the requested order
-        print_asset("logo.png")
-        print_asset("name.png")
-        print_asset("top.png")
-
-        printer.image(img_path)
-
-        print_asset("bottom.png")
-
-        # Lucky item section
-        lucky_items = [
-            # eggeye items
-            "ゆでたまご（半熟）",
-            "ゆでたまご（固茹で）",
-            "獅子舞",
-            "わさびソフトクリーム",
-            "丸いドアノブ",
-            "紙風船",
-            "バスタオル",
-            "横線が入った石",
-            "糸こんにゃく",
-            "車輪",
-            "もちもち君",
-            # jumango items
-            "テプラ",
-            ""
-        ]
-
-        selected_item = random.choice(lucky_items)
-
-        printer.text("☆*:.｡. ラッキーアイテム .｡.:*☆\n", align='center')
-        printer.text(f"{selected_item}\n", align='center', bold=True)
-
-        print_asset("ty.png")
-
-        printer.feed(3)
-
-        printer.cut()
+        # Print once (duplicate this call if you want multiple copies)
+        print_num = input("Enter number of copies to print: ")
+        for _ in tqdm(range(int(print_num)), desc="Printing copies"):
+            print_result(printer, img_path, assets_dir)
 
         # Close connection
         printer.close()

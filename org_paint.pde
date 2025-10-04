@@ -4,21 +4,19 @@
 
 import java.io.*;
 import java.util.HashMap;
-import java.util.HashSet;
 import processing.data.IntList;
 import javax.sound.midi.*;
 
 ArrayList<PGraphics> chunkTextures;  
 ArrayList<Integer> chunkPositions;
 HashMap<Integer, Integer> chunkIndexMap;  
-HashSet<Integer> chunkContentSet;
 
 
 LineCanvas lineCanvas;
 
 
-final int CANVAS_WIDTH = 320;
-final int CHUNK_HEIGHT = 128;  
+final int CANVAS_WIDTH = 500;
+final int CHUNK_HEIGHT = 180;  
 int SCREEN_HEIGHT = 180;  
 final int MAX_CHUNKS = 50;  
 
@@ -69,9 +67,9 @@ int[][] rainbowDitherMatrix;
 int[][] rainbowFadeDitherMatrix;
 color[] rainbowPalette;
 final int RAINBOW_BLOCK_SIZE = 6;
-final color RAINBOW_HIGHLIGHT_COLOR = 0xFFFFFFFF;
 final float RAINBOW_FADE_HEIGHT = 150.0f;
 final int RAINBOW_FADE_SUBCELL_SIZE = 1;
+final color RAINBOW_HIGHLIGHT_COLOR = 0xFFFFFFFF;
 
 
 String modalMessage = "";
@@ -111,6 +109,38 @@ boolean pendingRedo = false;
 
 PGraphics lowResCanvas;
 float displayScale = 1.0;
+
+
+final float STARTUP_RAINBOW_FONT_SIZE = 6.0;
+final float STARTUP_RAINBOW_LETTER_SPACING = 1.0;
+final int STARTUP_RAINBOW_MARGIN = 2;
+final String STARTUP_RAINBOW_TEXT = "ORG_PAINT";
+PGraphics startupRainbowBuffer = null;
+float startupRainbowContentWidth = 0;
+PFont startupRainbowFont;
+
+final float STARTUP_PROMPT_FONT_SIZE = 5.0f;
+final float STARTUP_PROMPT_LETTER_SPACING = 1.0f;
+final int STARTUP_PROMPT_MARGIN = 2;
+final String STARTUP_PROMPT_TEXT = "PRESS ENTER TO START";
+PGraphics startupPromptBuffer = null;
+float startupPromptContentWidth = 0;
+PFont startupPromptFont;
+
+final float STARTUP_VERSION_FONT_SIZE = 8.0f;
+final float STARTUP_VERSION_LETTER_SPACING = 1.0f;
+final int STARTUP_VERSION_MARGIN = 2;
+final String STARTUP_VERSION_TEXT = "v0.7 alpha";
+final int STARTUP_VERSION_COLOR = 0xFFFFD94C;
+PGraphics startupVersionBuffer = null;
+float startupVersionContentWidth = 0;
+PFont startupVersionFont;
+
+CaterpillarAnimation startupBugAnimation = null;
+float startupBugOriginX = -1;
+float startupBugOriginY = -1;
+float startupBugBaseSize = -1;
+final float STARTUP_BUG_PARAM = 0.55f;
 
 
 boolean showStartupScreen = true;  
@@ -166,11 +196,12 @@ void setup() {
   lowResCanvas = createGraphics(CANVAS_WIDTH, SCREEN_HEIGHT);
   lowResCanvas.noSmooth();  
   
+  startupRainbowFont = createFont("Courier", STARTUP_RAINBOW_FONT_SIZE, false);
+  
   
   chunkTextures = new ArrayList<PGraphics>();
   chunkPositions = new ArrayList<Integer>();
   chunkIndexMap = new HashMap<Integer, Integer>();
-  chunkContentSet = new HashSet<Integer>();
   
   
   lineCanvas = new LineCanvas();
@@ -205,6 +236,7 @@ void setup() {
     {10, 58, 6, 54, 9, 57, 5, 53},
     {42, 26, 38, 22, 41, 25, 37, 21}
   };
+
   IntList rainbowColors = new IntList();
   for (int i = 0; i < palette.length; i++) {
     if (i == 5 || i == 7) {
@@ -412,8 +444,6 @@ void performUndo() {
 
   undoLineState = null;
   undoAnimationState = null;
-
-  recomputeChunkContentSet();
 }
 
 
@@ -477,8 +507,6 @@ void performRedo() {
 
   redoLineState = null;
   redoAnimationState = null;
-
-  recomputeChunkContentSet();
 }
 
 void createChunk(int yPos) {
@@ -548,7 +576,6 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
       chunk.imageMode(CENTER);
       chunk.image(stampImages[currentImageIndex], globalMouseX, localMouseY, imageStampSize, imageStampSize);
       chunk.imageMode(CORNER);
-      markChunkHasContent(chunkIndex);
     }
   } else {
     color drawColor = palette[currentColorIndex];
@@ -570,51 +597,13 @@ void applyPaintToChunk(int chunkIndex, float globalMouseX, float globalMouseY,
 
     chunk.noStroke();
     chunk.ellipse(globalMouseX, localMouseY, effectiveBrushSize, effectiveBrushSize);
-    markChunkHasContent(chunkIndex);
   }
 
   chunk.endDraw();
-}
 
-boolean chunkHasVisibleContent(PGraphics chunk) {
-  if (chunk == null) {
-    return false;
-  }
-
-  chunk.loadPixels();
-  final int whiteRGB = 0x00FFFFFF;
-
-  for (int i = 0; i < chunk.pixels.length; i++) {
-    if ((chunk.pixels[i] & whiteRGB) != whiteRGB) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-void markChunkHasContent(int chunkIndex) {
-  if (chunkIndex < 0 || chunkIndex >= chunkPositions.size()) {
-    return;
-  }
-
-  int chunkY = chunkPositions.get(chunkIndex);
-  chunkContentSet.add(chunkY);
-}
-
-void recomputeChunkContentSet() {
-  chunkContentSet.clear();
-  for (int i = 0; i < chunkPositions.size(); i++) {
-    int chunkY = chunkPositions.get(i);
-    Integer chunkIdx = chunkIndexMap.get(chunkY);
-    if (chunkIdx == null) {
-      continue;
-    }
-
-    PGraphics chunk = chunkTextures.get(chunkIdx);
-    if (chunkHasVisibleContent(chunk)) {
-      chunkContentSet.add(chunkY);
-    }
+  int nextChunkY = chunkY + CHUNK_HEIGHT;
+  if (!chunkIndexMap.containsKey(nextChunkY) && chunkPositions.size() < MAX_CHUNKS) {
+    createChunk(nextChunkY);
   }
 }
 
@@ -2046,41 +2035,14 @@ void keyPressed() {
 
 
 float getMaxContentY() {
-  if (chunkContentSet == null) {
-    return CHUNK_HEIGHT;
+  if (chunkPositions.isEmpty()) return CHUNK_HEIGHT;  
+  
+  int maxY = 0;
+  for (int chunkY : chunkPositions) {
+    maxY = max(maxY, chunkY + CHUNK_HEIGHT);
   }
-
-  int maxY = Integer.MIN_VALUE;
-  boolean hasContent = false;
-
-  if (!chunkPositions.isEmpty()) {
-    for (int chunkY : chunkPositions) {
-      if (!chunkContentSet.contains(chunkY)) {
-        continue;
-      }
-
-      hasContent = true;
-      maxY = max(maxY, chunkY + CHUNK_HEIGHT);
-    }
-  }
-
-  if (lineCanvas != null && !lineCanvas.lines.isEmpty()) {
-    hasContent = true;
-    maxY = max(maxY, (int)lineCanvas.getMaxY());
-  }
-
-  if (animatedPen != null && animatedPen.animations != null && !animatedPen.animations.isEmpty()) {
-    hasContent = true;
-    for (AnimationInstance anim : animatedPen.animations) {
-      float padding = anim.baseSize * 1.5f;
-      maxY = max(maxY, (int)ceil(anim.originY + padding));
-    }
-  }
-
-  if (!hasContent) {
-    return CHUNK_HEIGHT;
-  }
-
+  
+  
   return maxY + CHUNK_HEIGHT;
 }
 
@@ -2088,61 +2050,38 @@ void saveAndPrint(boolean printToReceipt) {
   println("=== SAVE AND PRINT ===");
   
   
+  boolean hasChunks = !chunkTextures.isEmpty();
   boolean hasLines = (lineCanvas != null && !lineCanvas.lines.isEmpty());
-  boolean hasChunks = false;
-  boolean hasAnimations = (animatedPen != null && animatedPen.animations != null && !animatedPen.animations.isEmpty());
+  
+  if (!hasChunks && !hasLines) {
+    println("Nothing to save");
+    return;
+  }
+  
   
   int minY = Integer.MAX_VALUE;
   int maxY = Integer.MIN_VALUE;
   
-  if (!chunkTextures.isEmpty()) {
+  
+  if (hasChunks) {
     for (int i = 0; i < chunkPositions.size(); i++) {
       int chunkY = chunkPositions.get(i);
-      Integer chunkIdx = chunkIndexMap.get(chunkY);
-      if (chunkIdx == null) {
-        continue;
-      }
-
-      PGraphics chunk = chunkTextures.get(chunkIdx);
-      boolean chunkHasContent = chunkHasVisibleContent(chunk);
-      if (chunkHasContent) {
-        hasChunks = true;
-        chunkContentSet.add(chunkY);
-        minY = min(minY, chunkY);
-        maxY = max(maxY, chunkY + CHUNK_HEIGHT);
-      } else {
-        chunkContentSet.remove(chunkY);
-      }
+      minY = min(minY, chunkY);
+      maxY = max(maxY, chunkY + CHUNK_HEIGHT);
     }
   }
+  
   
   if (hasLines) {
     minY = min(minY, (int)lineCanvas.getMinY());
     maxY = max(maxY, (int)lineCanvas.getMaxY());
   }
-
-  if (hasAnimations) {
-    for (AnimationInstance anim : animatedPen.animations) {
-      float padding = anim.baseSize * 1.5f;
-      int animTop = (int)floor(anim.originY - padding);
-      int animBottom = (int)ceil(anim.originY + padding);
-      minY = min(minY, animTop);
-      maxY = max(maxY, animBottom);
-    }
-  }
-
-  if (!hasChunks && !hasLines && !hasAnimations) {
-    println("Nothing to save");
-    return;
-  }
+  
   
   if (minY == Integer.MAX_VALUE) {
     minY = 0;
     maxY = SCREEN_HEIGHT;
   }
-
-  minY = max(0, minY);
-  maxY = max(maxY, minY + 1);
   
   println("Saving from Y=" + minY + " to Y=" + maxY);
   
@@ -2231,59 +2170,11 @@ void saveAndPrint(boolean printToReceipt) {
 
 
 PImage renderFullCanvasToImage() {
-  boolean hasLines = (lineCanvas != null && !lineCanvas.lines.isEmpty());
-  boolean hasChunks = false;
-  boolean hasAnimations = (animatedPen != null && animatedPen.animations != null && !animatedPen.animations.isEmpty());
-  int minY = Integer.MAX_VALUE;
-  int maxY = Integer.MIN_VALUE;
-
-  if (!chunkTextures.isEmpty()) {
-    for (int i = 0; i < chunkPositions.size(); i++) {
-      int chunkY = chunkPositions.get(i);
-      Integer chunkIdx = chunkIndexMap.get(chunkY);
-      if (chunkIdx == null) {
-        continue;
-      }
-
-      PGraphics chunk = chunkTextures.get(chunkIdx);
-      boolean chunkHasContent = chunkHasVisibleContent(chunk);
-      if (chunkHasContent) {
-        hasChunks = true;
-        chunkContentSet.add(chunkY);
-        minY = min(minY, chunkY);
-        maxY = max(maxY, chunkY + CHUNK_HEIGHT);
-      } else {
-        chunkContentSet.remove(chunkY);
-      }
-    }
-  }
-
-  if (hasLines) {
-    minY = min(minY, (int)lineCanvas.getMinY());
-    maxY = max(maxY, (int)lineCanvas.getMaxY());
-  }
-
-  if (hasAnimations) {
-    for (AnimationInstance anim : animatedPen.animations) {
-      float padding = anim.baseSize * 1.5f;
-      int animTop = (int)floor(anim.originY - padding);
-      int animBottom = (int)ceil(anim.originY + padding);
-      minY = min(minY, animTop);
-      maxY = max(maxY, animBottom);
-    }
-  }
-
-  if (!hasChunks && !hasLines && !hasAnimations) {
+  int minY = 0;
+  int maxY = (int)getMaxContentY();
+  if (maxY <= minY) {
     return null;
   }
-
-  if (minY == Integer.MAX_VALUE) {
-    minY = 0;
-    maxY = SCREEN_HEIGHT;
-  }
-
-  minY = max(0, minY);
-  maxY = max(maxY, minY + 1);
 
   PImage finalImage = createImage(CANVAS_WIDTH, maxY - minY, RGB);
   finalImage.loadPixels();
@@ -2575,6 +2466,251 @@ class MidiReceiver implements Receiver {
 }
 
 
+void rebuildStartupRainbowBuffer() {
+  String rainbowText = STARTUP_RAINBOW_TEXT;
+  if (rainbowText == null || rainbowText.length() == 0) {
+    startupRainbowBuffer = null;
+    startupRainbowContentWidth = 0;
+    return;
+  }
+
+  PFont font = startupRainbowFont;
+  if (font == null) {
+    font = createFont("Courier", STARTUP_RAINBOW_FONT_SIZE, false);
+    startupRainbowFont = font;
+  }
+
+  PGraphics measure = createGraphics(1, 1);
+  measure.beginDraw();
+  measure.textFont(font);
+  measure.textSize(STARTUP_RAINBOW_FONT_SIZE);
+  float measuredWidth = 0;
+  for (int i = 0; i < rainbowText.length(); i++) {
+    String letter = rainbowText.substring(i, i + 1);
+    measuredWidth += measure.textWidth(letter);
+    if (i < rainbowText.length() - 1) {
+      measuredWidth += STARTUP_RAINBOW_LETTER_SPACING;
+    }
+  }
+  measure.endDraw();
+
+  int bufferWidth = max(1, (int)ceil(measuredWidth + STARTUP_RAINBOW_MARGIN * 2));
+  int bufferHeight = max(1, (int)ceil(STARTUP_RAINBOW_FONT_SIZE + STARTUP_RAINBOW_MARGIN * 2 + 2));
+
+  startupRainbowBuffer = createGraphics(bufferWidth, bufferHeight);
+  startupRainbowBuffer.beginDraw();
+  startupRainbowBuffer.background(0, 0);
+  startupRainbowBuffer.noSmooth();
+  startupRainbowBuffer.textFont(font);
+  startupRainbowBuffer.textSize(STARTUP_RAINBOW_FONT_SIZE);
+  startupRainbowBuffer.textAlign(LEFT, BASELINE);
+
+  float baselineY = STARTUP_RAINBOW_MARGIN + STARTUP_RAINBOW_FONT_SIZE;
+  float cursorX = STARTUP_RAINBOW_MARGIN;
+  for (int i = 0; i < rainbowText.length(); i++) {
+    String letter = rainbowText.substring(i, i + 1);
+    float letterWidth = startupRainbowBuffer.textWidth(letter);
+    color letterColor = rainbowPalette[(i % rainbowPalette.length)];
+
+    startupRainbowBuffer.fill(0, 220);
+    startupRainbowBuffer.text(letter, cursorX + 1, baselineY + 1);
+
+    startupRainbowBuffer.fill(letterColor);
+    startupRainbowBuffer.text(letter, cursorX, baselineY);
+
+    startupRainbowBuffer.fill(255, 80);
+    startupRainbowBuffer.text(letter, cursorX, baselineY - 1);
+
+    cursorX += letterWidth;
+    if (i < rainbowText.length() - 1) {
+      cursorX += STARTUP_RAINBOW_LETTER_SPACING;
+    }
+  }
+  startupRainbowBuffer.endDraw();
+
+  startupRainbowContentWidth = measuredWidth;
+}
+
+
+void ensureStartupRainbowBuffer() {
+  if (startupRainbowBuffer == null) {
+    rebuildStartupRainbowBuffer();
+  }
+}
+
+
+void rebuildStartupPromptBuffer() {
+  String promptText = STARTUP_PROMPT_TEXT;
+  if (promptText == null || promptText.length() == 0) {
+    startupPromptBuffer = null;
+    startupPromptContentWidth = 0;
+    return;
+  }
+
+  PFont font = startupPromptFont;
+  if (font == null) {
+    font = createFont("Courier", STARTUP_PROMPT_FONT_SIZE, false);
+    startupPromptFont = font;
+  }
+
+  PGraphics measure = createGraphics(1, 1);
+  measure.beginDraw();
+  measure.textFont(font);
+  measure.textSize(STARTUP_PROMPT_FONT_SIZE);
+  float measuredWidth = 0;
+  for (int i = 0; i < promptText.length(); i++) {
+    String letter = promptText.substring(i, i + 1);
+    measuredWidth += measure.textWidth(letter);
+    if (i < promptText.length() - 1) {
+      measuredWidth += STARTUP_PROMPT_LETTER_SPACING;
+    }
+  }
+  measure.endDraw();
+
+  int bufferWidth = max(1, (int)ceil(measuredWidth + STARTUP_PROMPT_MARGIN * 2));
+  int bufferHeight = max(1, (int)ceil(STARTUP_PROMPT_FONT_SIZE + STARTUP_PROMPT_MARGIN * 2 + 2));
+
+  startupPromptBuffer = createGraphics(bufferWidth, bufferHeight);
+  startupPromptBuffer.beginDraw();
+  startupPromptBuffer.background(0, 0);
+  startupPromptBuffer.noSmooth();
+  startupPromptBuffer.textFont(font);
+  startupPromptBuffer.textSize(STARTUP_PROMPT_FONT_SIZE);
+  startupPromptBuffer.textAlign(LEFT, BASELINE);
+
+  float baselineY = STARTUP_PROMPT_MARGIN + STARTUP_PROMPT_FONT_SIZE;
+  float cursorX = STARTUP_PROMPT_MARGIN;
+  for (int i = 0; i < promptText.length(); i++) {
+    String letter = promptText.substring(i, i + 1);
+    float letterWidth = startupPromptBuffer.textWidth(letter);
+
+    startupPromptBuffer.fill(0, 220);
+    startupPromptBuffer.text(letter, cursorX + 1, baselineY + 1);
+
+    startupPromptBuffer.fill(255);
+    startupPromptBuffer.text(letter, cursorX, baselineY);
+
+    startupPromptBuffer.fill(255, 120);
+    startupPromptBuffer.text(letter, cursorX, baselineY - 1);
+
+    cursorX += letterWidth;
+    if (i < promptText.length() - 1) {
+      cursorX += STARTUP_PROMPT_LETTER_SPACING;
+    }
+  }
+  startupPromptBuffer.endDraw();
+
+  startupPromptContentWidth = measuredWidth;
+}
+
+
+void ensureStartupPromptBuffer() {
+  if (startupPromptBuffer == null) {
+    rebuildStartupPromptBuffer();
+  }
+}
+
+
+void rebuildStartupVersionBuffer() {
+  String versionText = STARTUP_VERSION_TEXT;
+  if (versionText == null || versionText.length() == 0) {
+    startupVersionBuffer = null;
+    startupVersionContentWidth = 0;
+    return;
+  }
+
+  PFont font = startupVersionFont;
+  if (font == null) {
+    font = createFont("Courier", STARTUP_VERSION_FONT_SIZE, false);
+    startupVersionFont = font;
+  }
+
+  PGraphics measure = createGraphics(1, 1);
+  measure.beginDraw();
+  measure.textFont(font);
+  measure.textSize(STARTUP_VERSION_FONT_SIZE);
+  float measuredWidth = 0;
+  for (int i = 0; i < versionText.length(); i++) {
+    String letter = versionText.substring(i, i + 1);
+    measuredWidth += measure.textWidth(letter);
+    if (i < versionText.length() - 1) {
+      measuredWidth += STARTUP_VERSION_LETTER_SPACING;
+    }
+  }
+  measure.endDraw();
+
+  int bufferWidth = max(1, (int)ceil(measuredWidth + STARTUP_VERSION_MARGIN * 2));
+  int bufferHeight = max(1, (int)ceil(STARTUP_VERSION_FONT_SIZE + STARTUP_VERSION_MARGIN * 2 + 2));
+
+  startupVersionBuffer = createGraphics(bufferWidth, bufferHeight);
+  startupVersionBuffer.beginDraw();
+  startupVersionBuffer.background(0, 0);
+  startupVersionBuffer.noSmooth();
+  startupVersionBuffer.textFont(font);
+  startupVersionBuffer.textSize(STARTUP_VERSION_FONT_SIZE);
+  startupVersionBuffer.textAlign(LEFT, BASELINE);
+
+  float baselineY = STARTUP_VERSION_MARGIN + STARTUP_VERSION_FONT_SIZE;
+  float cursorX = STARTUP_VERSION_MARGIN;
+  for (int i = 0; i < versionText.length(); i++) {
+    String letter = versionText.substring(i, i + 1);
+    float letterWidth = startupVersionBuffer.textWidth(letter);
+    color letterColor = STARTUP_VERSION_COLOR;
+
+    startupVersionBuffer.fill(0, 200);
+    startupVersionBuffer.text(letter, cursorX + 1, baselineY + 1);
+
+    startupVersionBuffer.fill(letterColor);
+    startupVersionBuffer.text(letter, cursorX, baselineY);
+
+    startupVersionBuffer.fill(255, 80);
+    startupVersionBuffer.text(letter, cursorX, baselineY - 1);
+
+    cursorX += letterWidth;
+    if (i < versionText.length() - 1) {
+      cursorX += STARTUP_VERSION_LETTER_SPACING;
+    }
+  }
+  startupVersionBuffer.endDraw();
+
+  startupVersionContentWidth = measuredWidth;
+}
+
+
+void ensureStartupVersionBuffer() {
+  if (startupVersionBuffer == null) {
+    rebuildStartupVersionBuffer();
+  }
+}
+
+
+void ensureStartupBugAnimation(float centerX, float centerY, float baseSize) {
+  boolean needsRebuild = false;
+  if (startupBugAnimation == null) {
+    needsRebuild = true;
+  } else {
+    needsRebuild = abs(centerX - startupBugOriginX) > 1.0f
+      || abs(centerY - startupBugOriginY) > 1.0f
+      || abs(baseSize - startupBugBaseSize) > 0.5f;
+  }
+
+  if (needsRebuild) {
+    startupBugAnimation = new CaterpillarAnimation(centerX, centerY, baseSize, STARTUP_BUG_PARAM);
+    startupBugOriginX = centerX;
+    startupBugOriginY = centerY;
+    startupBugBaseSize = baseSize;
+  }
+
+  if (startupBugAnimation != null) {
+    startupBugAnimation.originX = centerX;
+    startupBugAnimation.originY = centerY;
+    startupBugOriginX = centerX;
+    startupBugOriginY = centerY;
+    startupBugBaseSize = baseSize;
+  }
+}
+
+
 void drawStartupScreen() {
   
   startupAnimTime += deltaSeconds;
@@ -2588,130 +2724,110 @@ void drawStartupScreen() {
   float rightPanelWidth = width - leftPanelWidth; 
   float centerY = height * 0.5;
 
-  
-  stroke(200);
-  strokeWeight(1);
-  line(leftPanelWidth, 0, leftPanelWidth, height);
-
-  
   float maxImg = min(leftPanelWidth, height) * 0.48; 
   float imgW = maxImg;
   float imgH = maxImg;
 
+  ensureStartupPromptBuffer();
   
-  float txtSize = max(18, min(width, height) * 0.04);
-  textSize(txtSize);
-  float textH = textAscent() + textDescent();
   float gap = 24; 
 
+  float promptScale = 1.0f;
+  float promptWidth = 0;
+  float promptHeight = 0;
+  float fallbackTextSize = max(18, min(width, height) * 0.04);
+  if (startupPromptBuffer != null) {
+    float desiredWidth = leftPanelWidth * 0.6f;
+    float desiredHeight = imgH * 0.22f;
+    float scaleByWidth = desiredWidth / max(1.0f, startupPromptBuffer.width);
+    float scaleByHeight = desiredHeight / max(1.0f, startupPromptBuffer.height);
+    promptScale = max(1.0f, min(scaleByWidth, scaleByHeight));
+    promptWidth = startupPromptBuffer.width * promptScale;
+    promptHeight = startupPromptBuffer.height * promptScale;
+  } else {
+    promptHeight = fallbackTextSize;
+    promptWidth = STARTUP_PROMPT_TEXT.length() * fallbackTextSize * 0.5f;
+  }
+
   
-  float groupH = imgH + gap + textH;
+  float groupH = imgH + gap + promptHeight;
   float groupTopY = centerY - groupH * 0.5;
 
   
-  if (stampImages != null && stampImages.length > 0 && stampImages[0] != null) {
-    imageMode(CENTER);
+  float bugCenterX = leftPanelWidth * 0.5f;
+  float bugCenterY = groupTopY + imgH * 0.5f;
+  float bugBaseSize = imgW * 0.85f;
+  ensureStartupBugAnimation(bugCenterX, bugCenterY, bugBaseSize);
+
+  if (startupBugAnimation != null) {
+    startupBugAnimation.update(deltaSeconds, frameTimeScale);
     noSmooth();
-    image(stampImages[0], leftPanelWidth * 0.5, groupTopY + imgH * 0.5, imgW, imgH);
-    imageMode(CORNER);
+    startupBugAnimation.draw(g, 0, false, 1.0f, 0, 0);
   }
 
-  
-  textAlign(CENTER, CENTER);
   float blinkAlpha = (sin(startupAnimTime * 4) * 0.5 + 0.5) * 255;
-  fill(0, blinkAlpha);
-  text("Press ENTER to start", leftPanelWidth * 0.5, groupTopY + imgH + gap + textH * 0.5);
-
-  
-  float rightCenterX = rightPanelStart + rightPanelWidth * 0.5;
-  float lineHeight = 22;
-  float sectionSpacing = 35;
-
-  
-  int drawingLines = 6; 
-  int systemLines = 5;  
-  int midiLines = midiConnected ? 4 : 0;
-  int canvasInfoLines = 3; 
-  boolean hasStampsInfo = (stampImages != null && stampImageNames != null && stampImageNames.length > 0);
-  int extraInfoLines = (hasStampsInfo ? 1 : 0) + 1; 
-
-  float totalH = 0;
-  totalH += 40; 
-  totalH += lineHeight  + drawingLines * lineHeight + sectionSpacing;
-  totalH += lineHeight  + systemLines * lineHeight + sectionSpacing;
-  if (midiConnected) {
-    totalH += lineHeight  + midiLines * lineHeight + sectionSpacing;
-  }
-  totalH += lineHeight  + (canvasInfoLines + extraInfoLines) * lineHeight;
-
-  float currentY = centerY - totalH * 0.5;
-
-  
-  textSize(24);
-  fill(0);
-  textAlign(CENTER, TOP);
-  text("CONTROLS & FEATURES", rightCenterX, currentY);
-  currentY += 40;
-
-  
-  textSize(16);
-  fill(0);
-  text("DRAWING", rightCenterX, currentY);
-  currentY += lineHeight;
-
-  textSize(13);
-  fill(60);
-  text("Left Click — Draw / Stamp / Animate", rightCenterX, currentY); currentY += lineHeight;
-  text("Right Click — No action", rightCenterX, currentY); currentY += lineHeight;
-  text("Mouse Wheel — Scroll Canvas", rightCenterX, currentY); currentY += lineHeight;
-  text("Arrow Keys — Scroll Canvas", rightCenterX, currentY); currentY += lineHeight;
-  text("Space — Zoom Mode", rightCenterX, currentY); currentY += lineHeight;
-  text("Tab (hold) — Debug Info", rightCenterX, currentY); currentY += sectionSpacing;
-
-  
-  textSize(16);
-  fill(0);
-  text("SYSTEM", rightCenterX, currentY);
-  currentY += lineHeight;
-
-  textSize(13);
-  fill(60);
-  text("Cmd + S — Export PNG", rightCenterX, currentY); currentY += lineHeight;
-  text("Cmd + Z — Undo", rightCenterX, currentY); currentY += lineHeight;
-  text("Cmd + Shift + Z — Redo", rightCenterX, currentY); currentY += lineHeight;
-  text("P — Save & Print", rightCenterX, currentY); currentY += lineHeight;
-  text("ESC — Exit Application", rightCenterX, currentY); currentY += sectionSpacing;
-
-  
-  if (midiConnected) {
-    textSize(16);
-    fill(0);
-    text("MIDI CONTROLS", rightCenterX, currentY);
-    currentY += lineHeight;
-
-    textSize(13);
-    fill(60);
-    text("CC1 — Pen Mode", rightCenterX, currentY); currentY += lineHeight;
-    text("CC2 — Color / Image / Anim Type", rightCenterX, currentY); currentY += lineHeight;
-    text("CC3 — Brush / Image / Anim Size", rightCenterX, currentY); currentY += lineHeight;
-    text("CC4 — Line Speed / Cloud Density", rightCenterX, currentY); currentY += sectionSpacing;
+  if (startupPromptBuffer != null) {
+    float promptX = leftPanelWidth * 0.5f - promptWidth * 0.5f;
+    float promptY = groupTopY + imgH + gap;
+    noSmooth();
+    imageMode(CORNER);
+    tint(255, blinkAlpha);
+    image(startupPromptBuffer, promptX, promptY, promptWidth, promptHeight);
+    noTint();
+  } else {
+    textSize(fallbackTextSize);
+    textAlign(CENTER, CENTER);
+    fill(0, blinkAlpha);
+    text("Press ENTER to start", leftPanelWidth * 0.5, groupTopY + imgH + gap + promptHeight * 0.5f);
   }
 
-  
-  textSize(16);
-  fill(0);
-  text("CANVAS INFO", rightCenterX, currentY);
-  currentY += lineHeight;
+  ensureStartupRainbowBuffer();
+  ensureStartupVersionBuffer();
+  textAlign(LEFT, TOP);
 
-  textSize(13);
-  fill(60);
-  text("Width — " + CANVAS_WIDTH + " px", rightCenterX, currentY); currentY += lineHeight;
-  text("Height — Infinite scroll", rightCenterX, currentY); currentY += lineHeight;
-  text("Chunk Size — " + CHUNK_HEIGHT + " px", rightCenterX, currentY); currentY += lineHeight;
-  if (hasStampsInfo) { text("Stamps — " + stampImageNames.length + " loaded", rightCenterX, currentY); currentY += lineHeight; }
-  text("MIDI — " + (midiConnected ? "Connected" : "Not Connected"), rightCenterX, currentY);
+  if (startupRainbowBuffer != null) {
+    float desiredHeight = min(rightPanelWidth * 0.45f, height * 0.3f);
+    float scaleByHeight = desiredHeight / max(1.0f, startupRainbowBuffer.height);
+    float scaleByWidth = (rightPanelWidth * 0.85f) / max(1.0f, startupRainbowBuffer.width);
+    float scale = max(1.0f, min(scaleByHeight, scaleByWidth));
 
-  
+    float scaledWidth = startupRainbowBuffer.width * scale;
+    float scaledHeight = startupRainbowBuffer.height * scale;
+    float startX = rightPanelStart + (rightPanelWidth - scaledWidth) * 0.5f;
+    float startY = centerY - scaledHeight * 0.5f;
+
+    noSmooth();
+    imageMode(CORNER);
+    image(startupRainbowBuffer, startX, startY, scaledWidth, scaledHeight);
+
+    tint(255, 90);
+    float shadowOffset = scale * 0.5f;
+    image(startupRainbowBuffer, startX - shadowOffset, startY - shadowOffset, scaledWidth, scaledHeight);
+    noTint();
+
+    float versionMarginTop = scale * 3.0f;
+    float versionFallbackSize = scaledHeight * 0.36f;
+    float versionY = startY + scaledHeight + versionMarginTop;
+    if (startupVersionBuffer != null) {
+      float desiredVersionWidth = scaledWidth * 0.95f;
+      float desiredVersionHeight = scaledHeight * 0.5f;
+      float versionScaleByWidth = desiredVersionWidth / max(1.0f, startupVersionBuffer.width);
+      float versionScaleByHeight = desiredVersionHeight / max(1.0f, startupVersionBuffer.height);
+      float versionScale = max(1.0f, min(versionScaleByWidth, versionScaleByHeight));
+      float versionWidth = startupVersionBuffer.width * versionScale;
+      float versionHeight = startupVersionBuffer.height * versionScale;
+      float versionX = startX + (scaledWidth - versionWidth) * 0.5f;
+      noSmooth();
+      image(startupVersionBuffer, versionX, versionY, versionWidth, versionHeight);
+    } else {
+      textAlign(CENTER, TOP);
+      textSize(versionFallbackSize);
+      fill(STARTUP_VERSION_COLOR);
+      text(STARTUP_VERSION_TEXT, startX + scaledWidth * 0.5f, versionY);
+      textAlign(LEFT, TOP);
+    }
+  }
+
   textAlign(LEFT, TOP);
 }
 
