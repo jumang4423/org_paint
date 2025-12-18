@@ -257,78 +257,21 @@ def print_asset(printer: MUNBYNPrinter, assets_dir: str, filename: str):
     printer.image(asset_path)
 
 
-def print_result(printer: MUNBYNPrinter, img_path: str, assets_dir: str):
-    """Print the full receipt: header assets, image, lucky item, and footer."""
-    # Print static assets and drawing in the requested order
-    print_asset(printer, assets_dir, "logo.png")
-    print_asset(printer, assets_dir, "name.png")
-    print_asset(printer, assets_dir, "top.png")
-
-    printer.image(img_path)
-
-    print_asset(printer, assets_dir, "bottom.png")
-
-    # Lucky item section
-    lucky_items = [
-        # eggeye items
-        "ゆでたまご（半熟）",
-        "ゆでたまご（固茹で）",
-        "獅子舞",
-        "わさびソフトクリーム",
-        "丸いドアノブ",
-        "紙風船",
-        "バスタオル",
-        "横線が入った石",
-        "糸こんにゃく",
-        "車輪",
-        "もちもち君",
-        # jumango items
-        "テプラ",
-        "グァバジュース",
-        "pot pourri",
-        "1000 レアモノ大図鑑",
-        "サーマルプリンター",
-    ]
-
-    selected_item = random.choice(lucky_items)
-
-    printer.text("☆*:.｡. ラッキーアイテム .｡.:*☆\n", align='center')
-    printer.text(f"{selected_item}\n", align='center', bold=True)
-
-    print_asset(printer, assets_dir, "ty.png")
-
-    printer.feed(3)
-    printer.cut()
-    
-
 # Main function to print the painting
 if __name__ == "__main__":
-    
-    # Check if image file exists
-    img_path = "output.png"
-    if len(sys.argv) > 1:
-        img_path = sys.argv[1]
-    
-    if not os.path.exists(img_path):
-        print(f"Error: {img_path} not found")
-        sys.exit(1)
-    
     try:
         # Initialize printer
         printer = MUNBYNPrinter(connection_type='usb')
 
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        assets_dir = os.path.join(script_dir, "data")
-
-        # Print once (duplicate this call if you want multiple copies)
-        print_num = input("Enter number of copies to print: ")
-        for _ in tqdm(range(int(print_num)), desc="Printing copies"):
-            print_result(printer, img_path, assets_dir)
+        # TODO: print assets
+        printer.text("HELLO WORLD\n")
+        printer.feed(3)
+        printer.cut()
 
         # Close connection
         printer.close()
 
-        print(f"Successfully printed {img_path}")
+        print("Successfully printed")
         
     except Exception as e:
         print(f"Printing failed: {e}")
